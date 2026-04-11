@@ -75,9 +75,9 @@ flowchart TD
     DAILY_CHECK -- "초과" --> HALT(["자동 거래 중단\n사용자에게 알림"])
     DAILY_CHECK -- "정상" --> SCAN
 
-    style GATE fill:#5c1a1a,stroke:#ff4a4a
-    style DAILY_CHECK fill:#5c1a1a,stroke:#ff4a4a
-    style HALT fill:#3a0a0a,stroke:#ff0000
+    style GATE fill:#fff3cd,stroke:#ffc107,color:#664d03
+    style DAILY_CHECK fill:#fff3cd,stroke:#ffc107,color:#664d03
+    style HALT fill:#f8d7da,stroke:#dc3545,color:#842029
 ```
 
 ## 사전 조건 (첫 실행 시)

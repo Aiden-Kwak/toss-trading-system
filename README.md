@@ -135,8 +135,8 @@ flowchart TD
     DAILY -- Yes --> HALT(["자동 중단"])
     DAILY -- No --> WAIT
 
-    style HALT fill:#3a0a0a,stroke:#ff0000
-    style GATE fill:#5c1a1a,stroke:#ff4a4a
+    style HALT fill:#f8d7da,stroke:#dc3545,color:#842029
+    style GATE fill:#fff3cd,stroke:#ffc107,color:#664d03
 ```
 
 | 비교 | `/toss-daytrade` | `/toss-autotrade` |

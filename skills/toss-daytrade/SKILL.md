@@ -95,15 +95,15 @@ flowchart TD
         R4["동시 포지션\n≤ 3종목"]
     end
 
-    style P1 fill:#1a3a5c,stroke:#4a9eff
-    style P2 fill:#1a4a3c,stroke:#4aff9e
-    style P3 fill:#4a3a1c,stroke:#ffaa4a
-    style P4 fill:#5c1a1a,stroke:#ff4a4a
-    style P5 fill:#3a1a5c,stroke:#aa4aff
-    style P6 fill:#1a3a3a,stroke:#4affff
-    style RISK fill:#3a0a0a,stroke:#ff6666
-    style DECIDE fill:#4a4a0a,stroke:#ffff4a
-    style CONFIRM fill:#4a4a0a,stroke:#ffff4a
+    style P1 fill:#cfe2ff,stroke:#6ea8fe,color:#084298
+    style P2 fill:#d1e7dd,stroke:#6edaa0,color:#0f5132
+    style P3 fill:#fff3cd,stroke:#ffc107,color:#664d03
+    style P4 fill:#f8d7da,stroke:#ea868f,color:#842029
+    style P5 fill:#e2d9f3,stroke:#a98eda,color:#432874
+    style P6 fill:#d1ecf1,stroke:#6edff6,color:#055160
+    style RISK fill:#f8d7da,stroke:#dc3545,color:#842029
+    style DECIDE fill:#fff3cd,stroke:#ffc107,color:#664d03
+    style CONFIRM fill:#fff3cd,stroke:#ffc107,color:#664d03
 ```
 
 ## 단타 워크플로우 상세
