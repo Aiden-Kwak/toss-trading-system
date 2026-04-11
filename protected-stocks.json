@@ -1,0 +1,19 @@
+{
+  "$schema": "protected-stocks",
+  "description": "사용자가 직접 관리하는 종목 목록. 자동매매 및 AI 판단에 의한 매수/매도가 차단됩니다.",
+  "updated_at": "2026-04-11",
+  "stocks": [
+    {
+      "symbol": "PLTR",
+      "name": "팔란티어",
+      "reason": "장기 보유 종목",
+      "protected_actions": ["buy", "sell"]
+    },
+    {
+      "symbol": "IREN",
+      "name": "아이렌",
+      "reason": "장기 보유 종목",
+      "protected_actions": ["buy", "sell"]
+    }
+  ]
+}

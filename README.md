@@ -42,6 +42,23 @@ flowchart LR
 | 내보내기 | `/toss-export` | CSV 내보내기 |
 | **단타 통합** | **`/toss-daytrade`** | **분석→발굴→주문→복기 전체 워크플로우** |
 | **자율 매매** | **`/toss-autotrade`** | **사용자 확인 없이 자동 분석/판단/실행** |
+| **보호 종목** | **`/toss-protect`** | **특정 종목을 자동매매 대상에서 제외** |
+
+### 보호 종목 가드레일
+
+사용자가 직접 관리하는 종목은 AI가 절대 건드릴 수 없도록 **시스템 레벨에서 강제**합니다.
+
+- `protected-stocks.json`에 보호 종목 등록
+- Claude Code **PreToolUse hook**으로 `tossctl order place/cancel/amend` 실행 전 자동 차단
+- 스킬 프롬프트와 무관하게 **시스템적으로 차단** (우회 불가)
+- `/toss-protect`로 보호 종목 추가/제거/조회
+
+```
+보호 종목에 대한 주문 시도 →
+  hook이 stdin JSON에서 --symbol 추출 →
+    protected-stocks.json과 대조 →
+      매치 시 exit 2 (차단) + stderr 메시지
+```
 
 ### 분석 스킬 (claude-trading-skills 연동)
 
