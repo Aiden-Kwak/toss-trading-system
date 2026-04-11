@@ -340,6 +340,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
+        elif path == "/api/daemon/status":
+            state_file = Path.home() / "Library/Application Support/tossctl/daemon-state.json"
+            if state_file.exists():
+                self._json_response(json.loads(state_file.read_text()))
+            else:
+                self._json_response({"status": "stopped", "message": "데몬 미실행"})
+
         elif path == "/api/screener/scan":
             cmd_args = ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "scan"]
             if params.get("source"): cmd_args.extend(["--source", params["source"]])

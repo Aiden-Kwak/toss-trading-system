@@ -162,6 +162,10 @@ button.primary:hover { opacity:0.9; }
     <div class="card-header"><span class="card-title">시그널 엔진</span><button class="card-action" onclick="loadSignals()">분석</button></div>
     <div id="signalPanel"><div class="loading">보유종목 로드 후 자동 분석</div></div>
   </div>
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">자동매매 데몬</span><button class="card-action" onclick="loadDaemon()">새로고침</button></div>
+    <div id="daemonPanel"><div class="loading">데몬 상태 확인 중...</div></div>
+  </div>
 </div>
 </div>
 
@@ -387,7 +391,24 @@ async function loadSuggestions() { const panel=document.getElementById('suggestP
 async function applySuggestion(id) { const r=await fetch(API+'/api/trades/apply-suggestion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}); const d=await r.json(); if(d.applied) loadSuggestions(); }
 
 // Load all (dashboard tab)
-async function loadAll() { checkMaintenance(); checkAuth(); loadSummary(); loadPositions(); setTimeout(loadSignals, 500); }
+// Daemon status
+async function loadDaemon() {
+  const r = await fetch(API+'/api/daemon/status'); const d = await r.json();
+  const panel = document.getElementById('daemonPanel');
+  const st = d.status || 'stopped';
+  const colors = {running:'var(--green)',paused_session:'var(--red)',paused_maintenance:'var(--yellow)',paused_loss_limit:'var(--red)',paused_cooldown:'var(--yellow)',stopped:'var(--text2)',error:'var(--red)'};
+  const labels = {running:'실행 중',paused_session:'세션 만료 (재로그인 필요)',paused_maintenance:'점검 대기',paused_loss_limit:'일일 손실 한도 도달',paused_cooldown:'냉각기',stopped:'정지',error:'에러'};
+  const c = colors[st]||'var(--text2)'; const label = labels[st]||st;
+  let html = `<div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
+    <div style="text-align:center"><div style="width:12px;height:12px;border-radius:50%;background:${c};display:inline-block;${st==='running'?'box-shadow:0 0 8px '+c+';animation:pulse 1.5s infinite':''}"></div> <span style="font-size:14px;font-weight:600;color:${c};margin-left:6px">${label}</span></div>
+    <div class="mono" style="font-size:12px;color:var(--text2)">사이클: ${d.cycle_count||0} | 오늘 거래: ${d.today_trades||0}건 | 오늘 P&L: ${(d.today_pnl||0)>0?'+':''}${d.today_pnl||0}% | 연속손실: ${d.consecutive_losses||0}</div></div>`;
+  if (d.last_error) html += `<div style="margin-top:8px;font-size:11px;color:var(--red)">마지막 에러: ${d.last_error}</div>`;
+  if (d.last_cycle_at) html += `<div style="margin-top:4px;font-size:11px;color:var(--text2)">마지막 사이클: ${d.last_cycle_at}</div>`;
+  html += `<div style="margin-top:12px;font-size:12px;color:var(--text2)">실행: <code>python3 scripts/autotrade-daemon.py</code> &nbsp;|&nbsp; 시뮬레이션: <code>python3 scripts/autotrade-daemon.py --dry-run</code></div>`;
+  panel.innerHTML = html;
+}
+
+async function loadAll() { checkMaintenance(); checkAuth(); loadSummary(); loadPositions(); loadDaemon(); setTimeout(loadSignals, 500); }
 loadAll();
 setInterval(loadAll, 60000);
 </script>
