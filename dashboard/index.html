@@ -103,6 +103,14 @@ button.primary:hover { opacity: 0.9; }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Maintenance Banner */
+.maint-banner { display: none; background: linear-gradient(135deg, #92400e, #b45309); border-bottom: 2px solid #f59e0b; padding: 14px 24px; text-align: center; }
+.maint-banner.active { display: block; }
+.maint-icon { font-size: 18px; margin-right: 8px; }
+.maint-text { font-size: 14px; font-weight: 600; color: #fef3c7; }
+.maint-time { font-size: 12px; color: #fde68a; margin-top: 4px; }
+.maint-countdown { font-size: 13px; color: #fff; font-weight: 700; margin-left: 8px; }
+
 /* Responsive */
 @media (max-width: 768px) {
   .container { grid-template-columns: 1fr; }
@@ -112,6 +120,15 @@ button.primary:hover { opacity: 0.9; }
 </style>
 </head>
 <body>
+
+<div class="maint-banner" id="maintBanner">
+  <div>
+    <span class="maint-icon">&#9888;</span>
+    <span class="maint-text" id="maintMessage">토스증권 시스템 점검 중</span>
+    <span class="maint-countdown" id="maintCountdown"></span>
+  </div>
+  <div class="maint-time" id="maintTime"></div>
+</div>
 
 <div class="header">
   <h1><span>Toss</span> Trading System</h1>
@@ -202,7 +219,51 @@ function pctClass(n) { return n >= 0 ? 'positive' : 'negative'; }
 // Clock
 setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleTimeString('ko-KR');
+  updateMaintCountdown();
 }, 1000);
+
+// Maintenance
+let maintUntil = null;
+
+async function checkMaintenance() {
+  try {
+    const r = await fetch(API + '/api/maintenance');
+    const d = await r.json();
+    const banner = document.getElementById('maintBanner');
+    if (d.maintenance) {
+      banner.classList.add('active');
+      document.getElementById('maintMessage').textContent = d.message || '토스증권 시스템 점검 중';
+      if (d.from && d.until) {
+        document.getElementById('maintTime').textContent = `점검 시간: ${d.from} ~ ${d.until}`;
+        maintUntil = new Date(d.until.replace(' ', 'T'));
+      } else {
+        document.getElementById('maintTime').textContent = '';
+        maintUntil = null;
+      }
+    } else {
+      banner.classList.remove('active');
+      maintUntil = null;
+    }
+  } catch { }
+}
+
+function updateMaintCountdown() {
+  const el = document.getElementById('maintCountdown');
+  if (!maintUntil) { el.textContent = ''; return; }
+  const diff = maintUntil - new Date();
+  if (diff <= 0) {
+    el.textContent = '(점검 종료 예정 - 새로고침 필요)';
+    return;
+  }
+  const min = Math.floor(diff / 60000);
+  const sec = Math.floor((diff % 60000) / 1000);
+  el.textContent = `(${min}분 ${sec}초 후 종료)`;
+}
+
+// Also detect maintenance from API errors
+function isMaintenance(data) {
+  return data && (data.maintenance || (data.error && data.error.includes('490')));
+}
 
 // Auth
 async function checkAuth() {
@@ -225,7 +286,12 @@ async function checkAuth() {
 async function loadSummary() {
   const r = await fetch(API + '/api/account/summary');
   const d = await r.json();
-  if (d.error) { document.getElementById('summaryGrid').innerHTML = `<div class="loading">${d.error}</div>`; return; }
+  if (d.maintenance) { checkMaintenance(); }
+  if (d.error) {
+    const msg = d.maintenance ? `&#9888; ${d.error}` : d.error;
+    document.getElementById('summaryGrid').innerHTML = `<div class="loading" style="${d.maintenance ? 'color:var(--yellow)' : ''}">${msg}</div>`;
+    return;
+  }
   const us = d.markets?.us || {};
   const kr = d.markets?.kr || {};
   document.getElementById('summaryGrid').innerHTML = `
@@ -412,6 +478,7 @@ async function removeProtected(symbol) {
 
 // Load all
 async function loadAll() {
+  checkMaintenance();
   checkAuth();
   loadSummary();
   loadPositions();

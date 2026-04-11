@@ -30,8 +30,54 @@ TOSS_ENV = {
 }
 
 
+def detect_maintenance(error_text: str) -> dict | None:
+    """에러 메시지에서 토스증권 점검시간 감지"""
+    if "490" in error_text and "unavailable" in error_text.lower():
+        return {"maintenance": True, "message": "토스증권 시스템 점검 중", "raw": error_text}
+    if "490" in error_text:
+        return {"maintenance": True, "message": "토스증권 시스템 점검 중 (490)", "raw": error_text}
+    return None
+
+
+def check_maintenance_curl() -> dict | None:
+    """curl로 직접 토스증권 API 상태 확인"""
+    try:
+        session_file = Path.home() / "Library/Application Support/tossctl/session.json"
+        if not session_file.exists():
+            return None
+        session = json.loads(session_file.read_text())
+        cookies = "; ".join(f"{k}={v}" for k, v in session.get("cookies", {}).items())
+        result = subprocess.run(
+            ["curl", "-s", "-w", "\n---HTTP_STATUS:%{http_code}---",
+             "-b", cookies,
+             "-H", "User-Agent: Mozilla/5.0",
+             "-H", "Accept: application/json",
+             "https://wts-cert-api.tossinvest.com/api/v3/my-assets/summaries/markets/all/overview"],
+            capture_output=True, text=True, timeout=10
+        )
+        output = result.stdout
+        if "---HTTP_STATUS:490---" in output:
+            body = output.split("\n---HTTP_STATUS:")[0]
+            try:
+                data = json.loads(body)
+                err = data.get("error", {})
+                return {
+                    "maintenance": True,
+                    "code": err.get("code", "unavailable.agency"),
+                    "message": err.get("message", "시스템 점검 중"),
+                    "from": err.get("data", {}).get("from"),
+                    "until": err.get("data", {}).get("until"),
+                    "daily": err.get("data", {}).get("daily", False),
+                }
+            except json.JSONDecodeError:
+                return {"maintenance": True, "message": "시스템 점검 중 (490)"}
+        return {"maintenance": False}
+    except Exception as e:
+        return None
+
+
 def run_tossctl(*args) -> dict:
-    """tossctl 명령 실행 후 JSON 반환"""
+    """tossctl 명령 실행 후 JSON 반환. 490 에러 시 점검 정보 포함."""
     try:
         result = subprocess.run(
             ["tossctl", *args, "--output", "json"],
@@ -39,6 +85,14 @@ def run_tossctl(*args) -> dict:
         )
         if result.returncode == 0:
             return json.loads(result.stdout)
+        # 점검시간 감지
+        maint = detect_maintenance(result.stderr)
+        if maint:
+            # curl로 상세 점검 정보 가져오기
+            detail = check_maintenance_curl()
+            if detail and detail.get("maintenance"):
+                return {"error": detail["message"], "maintenance": detail}
+            return {"error": maint["message"], "maintenance": maint}
         return {"error": result.stderr.strip(), "code": result.returncode}
     except json.JSONDecodeError:
         return {"raw": result.stdout.strip()}
@@ -79,6 +133,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return super().do_GET()
 
         # --- API Routes ---
+        if path == "/api/maintenance":
+            result = check_maintenance_curl()
+            self._json_response(result or {"maintenance": False})
+            return
+
         if path == "/api/auth/status":
             self._json_response(run_tossctl("auth", "status"))
 
