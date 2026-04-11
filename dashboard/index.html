@@ -103,6 +103,35 @@ button.primary:hover { opacity: 0.9; }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Suggestions */
+.suggest-card { background: var(--surface2); border-radius: 8px; padding: 14px; margin-bottom: 10px; border-left: 3px solid; }
+.suggest-card.warning { border-left-color: var(--yellow); }
+.suggest-card.success { border-left-color: var(--green); }
+.suggest-card.danger { border-left-color: var(--red); }
+.suggest-card.info { border-left-color: var(--blue); }
+.suggest-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.suggest-desc { font-size: 12px; color: var(--text2); margin-bottom: 8px; }
+.suggest-evidence { font-size: 11px; color: var(--text2); font-style: italic; margin-bottom: 8px; }
+.suggest-params { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.suggest-params .current { color: var(--text2); text-decoration: line-through; }
+.suggest-params .arrow { color: var(--text2); }
+.suggest-params .suggested { color: var(--green); font-weight: 700; }
+.suggest-apply { background: var(--green); color: #000; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.suggest-apply:hover { opacity: 0.85; }
+.suggest-applied { background: var(--surface); color: var(--text2); border: 1px solid var(--border); padding: 4px 12px; border-radius: 4px; font-size: 11px; }
+
+/* Stats grid */
+.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.stat-mini { background: var(--surface2); border-radius: 6px; padding: 10px; text-align: center; }
+.stat-mini-value { font-size: 18px; font-weight: 700; }
+.stat-mini-label { font-size: 10px; color: var(--text2); margin-top: 2px; }
+
+/* Pattern bars */
+.pattern-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.pattern-label { width: 60px; font-weight: 600; }
+.pattern-bar { height: 16px; border-radius: 3px; min-width: 2px; }
+.pattern-value { color: var(--text2); font-size: 11px; }
+
 /* Pipeline */
 .pipeline { display: flex; gap: 0; align-items: stretch; overflow-x: auto; padding: 8px 0; }
 .pipe-stage { flex: 1; min-width: 120px; position: relative; text-align: center; padding: 12px 8px; }
@@ -234,6 +263,32 @@ button.primary:hover { opacity: 0.9; }
       <input type="text" id="protectReason" placeholder="사유 (예: 장기보유)">
       <button class="primary" onclick="addProtected()">추가</button>
     </div>
+  </div>
+
+  <!-- Trade Log & Lessons -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">거래 기록 & 교훈</span>
+      <button class="card-action" onclick="loadTrades()">새로고침</button>
+    </div>
+    <div id="tradeLog"><div class="loading">거래 기록 없음</div></div>
+  </div>
+
+  <!-- Analysis & Suggestions -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">패턴 분석</span>
+      <button class="card-action" onclick="loadAnalysis()">분석 실행</button>
+    </div>
+    <div id="analysisPanel"><div class="loading">거래 기록이 쌓이면 패턴을 분석합니다</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">파라미터 조정 제안</span>
+      <button class="card-action" onclick="loadSuggestions()">제안 받기</button>
+    </div>
+    <div id="suggestPanel"><div class="loading">분석 결과 기반으로 제안을 생성합니다</div></div>
   </div>
 </div>
 
@@ -611,6 +666,155 @@ async function loadPipeline() {
   panel.innerHTML = html;
 }
 
+// Trade Log
+async function loadTrades() {
+  const r = await fetch(API + '/api/trades?status=all');
+  const d = await r.json();
+  const panel = document.getElementById('tradeLog');
+  if (!Array.isArray(d) || d.length === 0) {
+    panel.innerHTML = '<div class="loading">거래 기록 없음. 거래 실행 시 자동 기록됩니다.</div>';
+    return;
+  }
+  let html = `<table><tr><th>ID</th><th>종목</th><th>방향</th><th>진입가</th><th>청산가</th><th>수익률</th><th>사유</th><th>교훈</th><th>상태</th></tr>`;
+  d.slice(-15).reverse().forEach(t => {
+    const pnlClass = (t.pnl_pct || 0) >= 0 ? 'positive' : 'negative';
+    const pnl = t.pnl_pct != null ? `${t.pnl_pct > 0 ? '+' : ''}${t.pnl_pct}%` : '-';
+    const statusBadge = t.status === 'open' ? '<span class="badge badge-blue">보유중</span>' : '<span class="badge badge-purple">청산</span>';
+    const lesson = t.lesson ? `<span title="${t.lesson}">${t.lesson.slice(0,15)}${t.lesson.length > 15 ? '...' : ''}</span>` : '<span style="color:var(--text2)">-</span>';
+    html += `<tr>
+      <td class="mono">${t.id}</td>
+      <td><strong>${t.symbol}</strong></td>
+      <td>${t.side === 'buy' ? '매수' : '매도'}</td>
+      <td class="mono">${t.entry_price}</td>
+      <td class="mono">${t.exit_price || '-'}</td>
+      <td class="${pnlClass} mono">${pnl}</td>
+      <td style="font-size:11px">${t.exit_reason || '-'}</td>
+      <td style="font-size:11px">${lesson}</td>
+      <td>${statusBadge}</td>
+    </tr>`;
+  });
+  html += '</table>';
+  panel.innerHTML = html;
+}
+
+// Analysis
+async function loadAnalysis() {
+  const panel = document.getElementById('analysisPanel');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 분석 중...</div>';
+  const r = await fetch(API + '/api/trades/analyze');
+  const d = await r.json();
+  const s = d.stats || {};
+  const p = d.patterns || {};
+
+  if (!s.closed_trades) {
+    panel.innerHTML = `<div class="loading">${d.message || '청산 거래가 필요합니다'}</div>`;
+    return;
+  }
+
+  let html = '<div class="stats-grid">';
+  html += `<div class="stat-mini"><div class="stat-mini-value">${s.win_rate}%</div><div class="stat-mini-label">승률</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value ${s.avg_pnl >= 0 ? 'positive' : 'negative'}">${s.avg_pnl > 0 ? '+' : ''}${s.avg_pnl}%</div><div class="stat-mini-label">평균 수익</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value">${s.sharpe}</div><div class="stat-mini-label">샤프</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value">${s.profit_factor}</div><div class="stat-mini-label">수익 팩터</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value">${s.max_consecutive_losses || 0}</div><div class="stat-mini-label">연속 손실</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value">${s.avg_holding_days}일</div><div class="stat-mini-label">평균 보유</div></div>`;
+  html += '</div>';
+
+  // 등급별 성과
+  const grades = p.by_grade || {};
+  if (Object.keys(grades).length > 0) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">등급별 성과</div>';
+    for (const [g, data] of Object.entries(grades)) {
+      const barW = Math.max(2, Math.min(100, Math.abs(data.avg_pnl) * 10));
+      const barColor = data.avg_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      html += `<div class="pattern-row">
+        <span class="pattern-label">${g}등급</span>
+        <div class="pattern-bar" style="width:${barW}%;background:${barColor}"></div>
+        <span class="pattern-value">${data.count}건 | 승률 ${data.win_rate}% | 평균 ${data.avg_pnl > 0 ? '+' : ''}${data.avg_pnl}%</span>
+      </div>`;
+    }
+  }
+
+  // 교훈 목록
+  const lessons = d.lessons || [];
+  if (lessons.length > 0) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">교훈 (점수순)</div>';
+    lessons.slice(0, 5).forEach(l => {
+      const stars = '★'.repeat(Math.min(l.score, 10)) + '☆'.repeat(Math.max(0, 10 - l.score));
+      html += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <strong>${l.symbol}</strong> <span class="${l.pnl >= 0 ? 'positive' : 'negative'}">${l.pnl > 0 ? '+' : ''}${l.pnl}%</span>
+        <span style="color:var(--yellow);font-size:10px;margin-left:4px">${stars}</span>
+        <div style="color:var(--text2);margin-top:2px">${l.lesson}</div>
+      </div>`;
+    });
+  }
+
+  panel.innerHTML = html;
+}
+
+// Suggestions
+async function loadSuggestions() {
+  const panel = document.getElementById('suggestPanel');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 제안 생성 중...</div>';
+  const r = await fetch(API + '/api/trades/suggest');
+  const d = await r.json();
+  const suggestions = d.suggestions || [];
+
+  if (!suggestions.length) {
+    panel.innerHTML = '<div class="loading">제안 없음</div>';
+    return;
+  }
+
+  let html = '';
+  suggestions.forEach(s => {
+    html += `<div class="suggest-card ${s.type}" id="suggest-${s.id}">
+      <div class="suggest-title">${s.title}</div>
+      <div class="suggest-desc">${s.description}</div>`;
+    if (s.evidence) {
+      html += `<div class="suggest-evidence">${s.evidence}</div>`;
+    }
+    if (s.param && s.suggested !== null) {
+      const curr = Array.isArray(s.current) ? s.current.join(', ') : s.current;
+      const sugg = Array.isArray(s.suggested) ? s.suggested.join(', ') : s.suggested;
+      html += `<div class="suggest-params">
+        <span>${s.param}:</span>
+        <span class="current">${curr}</span>
+        <span class="arrow">→</span>
+        <span class="suggested">${sugg}</span>
+        <button class="suggest-apply" onclick="applySuggestion('${s.id}')">반영</button>
+      </div>`;
+    }
+    html += '</div>';
+  });
+
+  // 현재 파라미터 표시
+  const cr = await fetch(API + '/api/trades/config');
+  const config = await cr.json();
+  html += '<div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:8px">';
+  html += '<div style="font-size:11px;color:var(--text2);margin-bottom:6px">현재 파라미터</div>';
+  html += '<div style="font-size:12px;font-family:monospace">';
+  for (const [k, v] of Object.entries(config)) {
+    html += `${k}: <strong>${Array.isArray(v) ? v.join(', ') : v}</strong><br>`;
+  }
+  html += '</div></div>';
+
+  panel.innerHTML = html;
+}
+
+async function applySuggestion(id) {
+  const r = await fetch(API + '/api/trades/apply-suggestion', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id })
+  });
+  const d = await r.json();
+  if (d.applied) {
+    const card = document.getElementById('suggest-' + id);
+    const btn = card?.querySelector('.suggest-apply');
+    if (btn) { btn.textContent = '반영됨'; btn.className = 'suggest-applied'; btn.disabled = true; }
+    loadSuggestions();
+  }
+}
+
 async function loadAll() {
   checkMaintenance();
   checkAuth();
@@ -618,6 +822,7 @@ async function loadAll() {
   loadPositions();
   loadRiskGate();
   loadProtected();
+  loadTrades();
   setTimeout(loadSignals, 500);
 }
 

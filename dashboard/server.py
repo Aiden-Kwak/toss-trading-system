@@ -319,6 +319,34 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
             self._json_response(pipeline)
 
+        elif path == "/api/trades":
+            result = subprocess.run(
+                ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "list", "--status", params.get("status", "all")],
+                capture_output=True, text=True, timeout=5
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/trades/analyze":
+            result = subprocess.run(
+                ["python3", str(SCRIPTS_DIR / "trade-analyzer.py"), "analyze"],
+                capture_output=True, text=True, timeout=10
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/trades/suggest":
+            result = subprocess.run(
+                ["python3", str(SCRIPTS_DIR / "trade-analyzer.py"), "suggest"],
+                capture_output=True, text=True, timeout=10
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/trades/config":
+            config_file = Path.home() / "Library/Application Support/tossctl/signal-config.json"
+            if config_file.exists():
+                self._json_response(json.loads(config_file.read_text()))
+            else:
+                self._json_response({"stop_loss_pct": -3.0, "take_profit_pct": 7.0, "max_positions": 2, "max_position_pct": 10, "daily_loss_limit_pct": -2.0, "entry_grades": ["A", "B"]})
+
         else:
             self._json_response({"error": "not found"}, 404)
 
@@ -347,6 +375,35 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             stocks["updated_at"] = __import__("datetime").date.today().isoformat()
             PROTECTED_FILE.write_text(json.dumps(stocks, ensure_ascii=False, indent=2))
             self._json_response({"ok": True, "stocks": stocks["stocks"]})
+
+        elif path == "/api/trades/log":
+            args = ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "log"]
+            for k, v in body.items():
+                args.extend([f"--{k}", str(v)])
+            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/trades/close":
+            args = ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "close"]
+            for k, v in body.items():
+                args.extend([f"--{k}", str(v)])
+            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/trades/lesson":
+            args = ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "lesson"]
+            for k, v in body.items():
+                args.extend([f"--{k}", str(v)])
+            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/trades/apply-suggestion":
+            sid = body.get("id", "")
+            result = subprocess.run(
+                ["python3", str(SCRIPTS_DIR / "trade-analyzer.py"), "apply", sid],
+                capture_output=True, text=True, timeout=5
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         else:
             self._json_response({"error": "not found"}, 404)
