@@ -340,6 +340,21 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
+        elif path == "/api/screener/scan":
+            cmd_args = ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "scan"]
+            if params.get("source"): cmd_args.extend(["--source", params["source"]])
+            if params.get("market"): cmd_args.extend(["--market", params["market"]])
+            if params.get("news-symbols"): cmd_args.extend(["--news-symbols", params["news-symbols"]])
+            result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=60, env=TOSS_ENV)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/screener/watchlist":
+            result = subprocess.run(
+                ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-list"],
+                capture_output=True, text=True, timeout=5
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
         elif path == "/api/trades/config":
             config_file = Path.home() / "Library/Application Support/tossctl/signal-config.json"
             if config_file.exists():
@@ -401,6 +416,20 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             sid = body.get("id", "")
             result = subprocess.run(
                 ["python3", str(SCRIPTS_DIR / "trade-analyzer.py"), "apply", sid],
+                capture_output=True, text=True, timeout=5
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/screener/watchlist-add":
+            args = ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-add"]
+            for k, v in body.items():
+                args.extend([f"--{k}", str(v)])
+            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/screener/watchlist-remove":
+            result = subprocess.run(
+                ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-remove", "--symbol", body.get("symbol", "")],
                 capture_output=True, text=True, timeout=5
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})

@@ -222,6 +222,28 @@ button.primary:hover { opacity: 0.9; }
     <div id="positionsTable"><div class="loading"><span class="spinner"></span> 로딩 중...</div></div>
   </div>
 
+  <!-- Stock Screener -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">종목 스크리너 (워치리스트 + 자동탐색 + 뉴스)</span>
+      <div style="display:flex;gap:6px">
+        <button class="card-action" onclick="runScreener('watchlist')">워치리스트</button>
+        <button class="card-action" onclick="runScreener('auto')">자동탐색</button>
+        <button class="card-action" onclick="runScreener('all')" style="background:rgba(59,130,246,0.15)">전체 스캔</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" id="watchlistTags"></div>
+    <div class="input-row" style="margin-top:0;margin-bottom:12px">
+      <input type="text" id="wlSymbol" placeholder="워치리스트 추가 (예: TSLA)">
+      <input type="text" id="wlName" placeholder="종목명">
+      <button class="primary" onclick="addToWatchlist()" style="white-space:nowrap">추가</button>
+      <span style="color:var(--border);margin:0 4px">|</span>
+      <input type="text" id="newsSymbols" placeholder="뉴스 종목 (쉼표 구분: NVDA,TSLA)">
+      <button class="primary" onclick="runScreenerWithNews()" style="background:var(--purple);white-space:nowrap">뉴스 평가</button>
+    </div>
+    <div id="screenerResult"><div class="loading">스캔 버튼을 클릭하세요</div></div>
+  </div>
+
   <!-- Signals -->
   <div class="card">
     <div class="card-header">
@@ -666,6 +688,131 @@ async function loadPipeline() {
   panel.innerHTML = html;
 }
 
+// Screener
+async function loadWatchlist() {
+  const r = await fetch(API + '/api/screener/watchlist');
+  const d = await r.json();
+  const panel = document.getElementById('watchlistTags');
+  if (!Array.isArray(d) || d.length === 0) {
+    panel.innerHTML = '<span style="color:var(--text2);font-size:12px">워치리스트 비어있음 - 종목을 추가하세요</span>';
+    return;
+  }
+  panel.innerHTML = d.map(s =>
+    `<div class="protected-tag" style="border-color:var(--blue)">
+      <span style="font-weight:700;color:var(--blue)">${s.symbol}</span>
+      <span style="font-size:11px">${s.name || ''}</span>
+      <span style="font-size:10px;color:var(--text2)">${s.market}</span>
+      <span class="remove" onclick="removeFromWatchlist('${s.symbol}')">&times;</span>
+    </div>`
+  ).join('');
+}
+
+async function addToWatchlist() {
+  const symbol = document.getElementById('wlSymbol').value.trim();
+  const name = document.getElementById('wlName').value.trim();
+  if (!symbol) return;
+  const market = symbol.match(/^\d{6}$/) ? 'kr' : 'us';
+  await fetch(API + '/api/screener/watchlist-add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ symbol, name, market })
+  });
+  document.getElementById('wlSymbol').value = '';
+  document.getElementById('wlName').value = '';
+  loadWatchlist();
+}
+
+async function removeFromWatchlist(symbol) {
+  await fetch(API + '/api/screener/watchlist-remove', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ symbol })
+  });
+  loadWatchlist();
+}
+
+async function runScreener(source) {
+  const panel = document.getElementById('screenerResult');
+  panel.innerHTML = `<div class="loading"><span class="spinner"></span> ${source === 'auto' ? '자동 탐색 중 (최대 30초)...' : '스크리닝 중...'}</div>`;
+  const r = await fetch(API + `/api/screener/scan?source=${source}&market=us`);
+  const d = await r.json();
+  renderScreenerResult(d);
+}
+
+async function runScreenerWithNews() {
+  const symbols = document.getElementById('newsSymbols').value.trim();
+  if (!symbols) return;
+  const panel = document.getElementById('screenerResult');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 뉴스 종목 평가 중...</div>';
+  const r = await fetch(API + `/api/screener/scan?source=watchlist&news-symbols=${symbols}`);
+  const d = await r.json();
+  document.getElementById('newsSymbols').value = '';
+  renderScreenerResult(d);
+}
+
+function renderScreenerResult(d) {
+  const panel = document.getElementById('screenerResult');
+  if (d.error) { panel.innerHTML = `<div class="loading">${d.error}</div>`; return; }
+
+  let html = `<div style="font-size:12px;color:var(--text2);margin-bottom:8px">
+    소스: ${(d.sources||[]).join(' + ')} | 스캔: ${d.total_scanned}개 | 채점: ${d.total_scored}개 |
+    <span class="positive">매수 후보 ${d.summary?.buy||0}</span> /
+    관망 ${d.summary?.watch||0} /
+    <span class="negative">스킵 ${d.summary?.skip||0}</span>
+  </div>`;
+
+  // 매수 후보 (A/B)
+  const buys = d.buy_candidates || [];
+  if (buys.length > 0) {
+    html += '<div style="font-size:13px;font-weight:600;margin:8px 0 6px;color:var(--green)">매수 후보</div>';
+    html += '<div class="pipe-signals">';
+    buys.forEach(e => {
+      const gradeColor = e.grade === 'A' ? 'var(--green)' : 'var(--blue)';
+      const src = e._source === 'watchlist' ? '📋' : e._source === 'auto' ? '🔍' : '📰';
+      html += `<div class="pipe-signal-card" style="border-left:3px solid ${gradeColor}">
+        <div class="pipe-signal-header">
+          <strong>${e.symbol}</strong>
+          <span class="badge" style="background:${gradeColor}20;color:${gradeColor}">${e.grade} ${e.recommendation}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text2)">${src} ${e.name || ''}</div>
+        <div class="mono" style="font-size:13px;margin-top:4px">${e.score}/${e.max_score} (${e.score_pct}%)</div>
+        <div style="font-size:11px;margin-top:2px;color:var(--text2)">
+          ${e.change_rate > 0 ? '+' : ''}${e.change_rate}%
+          ${e._vol_spike ? ` | 거래량 x${e._vol_spike}` : ''}
+          ${e._gap_pct ? ` | 갭 ${e._gap_pct > 0 ? '+' : ''}${e._gap_pct}%` : ''}
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // 관망 (C)
+  const watches = d.watch_list || [];
+  if (watches.length > 0) {
+    html += '<div style="font-size:13px;font-weight:600;margin:12px 0 6px;color:var(--yellow)">관망</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    watches.forEach(e => {
+      html += `<span class="badge badge-yellow">${e.symbol} ${e.score_pct}%</span>`;
+    });
+    html += '</div>';
+  }
+
+  // 스킵 (D)
+  const skips = d.skip_list || [];
+  if (skips.length > 0) {
+    html += '<div style="font-size:13px;font-weight:600;margin:12px 0 6px;color:var(--text2)">스킵</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    skips.forEach(e => {
+      html += `<span class="badge" style="background:var(--surface2);color:var(--text2)">${e.symbol} ${e.score_pct}%</span>`;
+    });
+    html += '</div>';
+  }
+
+  if (!buys.length && !watches.length && !skips.length) {
+    html += '<div class="loading">스크리닝 결과 없음</div>';
+  }
+
+  panel.innerHTML = html;
+}
+
 // Trade Log
 async function loadTrades() {
   const r = await fetch(API + '/api/trades?status=all');
@@ -820,6 +967,7 @@ async function loadAll() {
   checkAuth();
   loadSummary();
   loadPositions();
+  loadWatchlist();
   loadRiskGate();
   loadProtected();
   loadTrades();
