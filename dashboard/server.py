@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""
+toss-trading-system 대시보드 서버
+tossctl 명령을 HTTP API로 래핑하고, 프론트엔드를 서빙합니다.
+
+사용법: python3 dashboard/server.py [--port 8777]
+"""
+
+import http.server
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8777
+DASHBOARD_DIR = Path(__file__).parent
+REPO_DIR = DASHBOARD_DIR.parent
+SCRIPTS_DIR = REPO_DIR / "scripts"
+PROTECTED_FILE = Path.home() / "Library/Application Support/tossctl/protected-stocks.json"
+CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/config.json"
+
+# tossctl 환경변수
+TOSS_ENV = {
+    **os.environ,
+    "PATH": f"{Path.home()}/Desktop/Personal/Stock/tossinvest-cli/bin:{os.environ.get('PATH', '')}",
+    "TOSSCTL_AUTH_HELPER_DIR": str(Path.home() / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"),
+    "TOSSCTL_AUTH_HELPER_PYTHON": str(Path.home() / "Desktop/Personal/Stock/tossinvest-cli/auth-helper/.venv/bin/python3"),
+}
+
+
+def run_tossctl(*args) -> dict:
+    """tossctl 명령 실행 후 JSON 반환"""
+    try:
+        result = subprocess.run(
+            ["tossctl", *args, "--output", "json"],
+            capture_output=True, text=True, timeout=15, env=TOSS_ENV
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        return {"error": result.stderr.strip(), "code": result.returncode}
+    except json.JSONDecodeError:
+        return {"raw": result.stdout.strip()}
+    except subprocess.TimeoutExpired:
+        return {"error": "timeout"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def run_signal_engine(command: str, **kwargs) -> dict:
+    """signal-engine.py 실행"""
+    try:
+        args = ["python3", str(SCRIPTS_DIR / "signal-engine.py"), command]
+        for k, v in kwargs.items():
+            args.extend([f"--{k}", json.dumps(v) if isinstance(v, (dict, list)) else str(v)])
+        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        return {"error": result.stderr.strip()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class DashboardHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(DASHBOARD_DIR), **kwargs)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+
+        if path == "/":
+            self.path = "/index.html"
+            return super().do_GET()
+
+        if not path.startswith("/api/"):
+            return super().do_GET()
+
+        # --- API Routes ---
+        if path == "/api/auth/status":
+            self._json_response(run_tossctl("auth", "status"))
+
+        elif path == "/api/account/summary":
+            self._json_response(run_tossctl("account", "summary"))
+
+        elif path == "/api/portfolio/positions":
+            self._json_response(run_tossctl("portfolio", "positions"))
+
+        elif path == "/api/orders/list":
+            self._json_response(run_tossctl("orders", "list"))
+
+        elif path == "/api/quote/batch":
+            symbols = params.get("symbols", "").split(",")
+            if symbols and symbols[0]:
+                self._json_response(run_tossctl("quote", "batch", *symbols))
+            else:
+                self._json_response({"error": "no symbols"})
+
+        elif path == "/api/quote/get":
+            symbol = params.get("symbol", "")
+            if symbol:
+                self._json_response(run_tossctl("quote", "get", symbol))
+            else:
+                self._json_response({"error": "no symbol"})
+
+        elif path == "/api/config/show":
+            if CONFIG_FILE.exists():
+                self._json_response(json.loads(CONFIG_FILE.read_text()))
+            else:
+                self._json_response({"error": "config not found"})
+
+        elif path == "/api/protected-stocks":
+            if PROTECTED_FILE.exists():
+                self._json_response(json.loads(PROTECTED_FILE.read_text()))
+            else:
+                self._json_response({"stocks": []})
+
+        elif path == "/api/signal/check-positions":
+            positions = run_tossctl("portfolio", "positions")
+            if isinstance(positions, list):
+                result = run_signal_engine("check-positions", positions=positions)
+                self._json_response(result)
+            else:
+                self._json_response(positions)
+
+        elif path == "/api/signal/risk-gate":
+            summary = run_tossctl("account", "summary")
+            positions = run_tossctl("portfolio", "positions")
+            active = len(positions) if isinstance(positions, list) else 0
+            result = run_signal_engine(
+                "risk-gate", portfolio=summary,
+                **{"today-pnl": "0", "active-positions": str(active)}
+            )
+            self._json_response(result)
+
+        elif path == "/api/signal/evaluate-buy":
+            symbol = params.get("symbol", "")
+            if not symbol:
+                self._json_response({"error": "no symbol"})
+                return
+            quote = run_tossctl("quote", "get", symbol)
+            summary = run_tossctl("account", "summary")
+            if not isinstance(quote, dict) or "error" in quote:
+                self._json_response(quote)
+                return
+            result = run_signal_engine("evaluate-buy", quote=quote, portfolio=summary)
+            self._json_response(result)
+
+        elif path == "/api/signal/compute-alphas":
+            symbol = params.get("symbol", "")
+            if not symbol:
+                self._json_response({"error": "no symbol"})
+                return
+            quote = run_tossctl("quote", "get", symbol)
+            if isinstance(quote, dict) and "error" not in quote:
+                result = run_signal_engine("compute-alphas", quote=quote)
+                self._json_response(result)
+            else:
+                self._json_response(quote)
+
+        else:
+            self._json_response({"error": "not found"}, 404)
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(content_len)) if content_len > 0 else {}
+
+        if path == "/api/protected-stocks/add":
+            stocks = json.loads(PROTECTED_FILE.read_text()) if PROTECTED_FILE.exists() else {"stocks": []}
+            stocks["stocks"].append({
+                "symbol": body.get("symbol", "").upper(),
+                "name": body.get("name", ""),
+                "reason": body.get("reason", "사용자 지정"),
+                "protected_actions": body.get("protected_actions", ["buy", "sell"]),
+            })
+            stocks["updated_at"] = __import__("datetime").date.today().isoformat()
+            PROTECTED_FILE.write_text(json.dumps(stocks, ensure_ascii=False, indent=2))
+            self._json_response({"ok": True, "stocks": stocks["stocks"]})
+
+        elif path == "/api/protected-stocks/remove":
+            symbol = body.get("symbol", "").upper()
+            stocks = json.loads(PROTECTED_FILE.read_text()) if PROTECTED_FILE.exists() else {"stocks": []}
+            stocks["stocks"] = [s for s in stocks["stocks"] if s["symbol"].upper() != symbol]
+            stocks["updated_at"] = __import__("datetime").date.today().isoformat()
+            PROTECTED_FILE.write_text(json.dumps(stocks, ensure_ascii=False, indent=2))
+            self._json_response({"ok": True, "stocks": stocks["stocks"]})
+
+        else:
+            self._json_response({"error": "not found"}, 404)
+
+    def _json_response(self, data, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+    def log_message(self, format, *args):
+        if "/api/" in str(args[0]):
+            print(f"  API: {args[0]}")
+
+
+if __name__ == "__main__":
+    print(f"🚀 toss-trading-system dashboard")
+    print(f"   http://localhost:{PORT}")
+    print(f"   Ctrl+C to stop")
+    server = http.server.HTTPServer(("", PORT), DashboardHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n  Stopped.")

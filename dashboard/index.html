@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toss Trading System</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #242836;
+  --border: #2d3348;
+  --text: #e4e6f0;
+  --text2: #8b8fa3;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #eab308;
+  --blue: #3b82f6;
+  --purple: #a855f7;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, 'Pretendard', sans-serif; background: var(--bg); color: var(--text); }
+
+/* Layout */
+.header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header h1 span { color: var(--blue); }
+.status-bar { display: flex; gap: 16px; align-items: center; font-size: 13px; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.status-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.off { background: var(--red); }
+
+.container { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
+.full-width { grid-column: 1 / -1; }
+
+/* Cards */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.card-title { font-size: 14px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+.card-action { font-size: 12px; color: var(--blue); cursor: pointer; border: 1px solid var(--blue); padding: 4px 10px; border-radius: 6px; background: none; }
+.card-action:hover { background: rgba(59,130,246,0.15); }
+
+/* Summary */
+.summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.summary-item { background: var(--surface2); border-radius: 8px; padding: 14px; }
+.summary-label { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.summary-value { font-size: 22px; font-weight: 700; }
+.summary-sub { font-size: 12px; margin-top: 2px; }
+.positive { color: var(--green); }
+.negative { color: var(--red); }
+
+/* Table */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 10px 12px; color: var(--text2); font-weight: 500; border-bottom: 1px solid var(--border); font-size: 12px; }
+td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: var(--surface2); }
+.mono { font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; }
+
+/* Badges */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
+.badge-red { background: rgba(239,68,68,0.15); color: var(--red); }
+.badge-yellow { background: rgba(234,179,8,0.15); color: var(--yellow); }
+.badge-blue { background: rgba(59,130,246,0.15); color: var(--blue); }
+.badge-purple { background: rgba(168,85,247,0.15); color: var(--purple); }
+
+/* Signal */
+.signal-bar { display: flex; gap: 4px; align-items: center; margin-top: 8px; }
+.signal-segment { height: 6px; border-radius: 3px; }
+.alpha-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 12px; }
+.alpha-item { background: var(--surface2); border-radius: 6px; padding: 10px; text-align: center; }
+.alpha-value { font-size: 18px; font-weight: 700; margin: 4px 0; }
+.alpha-name { font-size: 11px; color: var(--text2); }
+.alpha-interp { font-size: 10px; margin-top: 2px; }
+
+/* Risk Gate */
+.gate-check { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.gate-icon { font-size: 16px; }
+
+/* Protected */
+.protected-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.protected-tag { display: flex; align-items: center; gap: 6px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+.protected-tag .symbol { font-weight: 700; color: var(--yellow); }
+.protected-tag .remove { cursor: pointer; color: var(--text2); font-size: 16px; }
+.protected-tag .remove:hover { color: var(--red); }
+
+/* Input */
+.input-row { display: flex; gap: 8px; margin-top: 12px; }
+input[type="text"] { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; flex: 1; }
+input[type="text"]::placeholder { color: var(--text2); }
+button.primary { background: var(--blue); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+button.primary:hover { opacity: 0.9; }
+
+/* Score */
+.score-ring { width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800; margin: 0 auto; }
+.grade-A { border: 3px solid var(--green); color: var(--green); }
+.grade-B { border: 3px solid var(--blue); color: var(--blue); }
+.grade-C { border: 3px solid var(--yellow); color: var(--yellow); }
+.grade-D { border: 3px solid var(--red); color: var(--red); }
+
+/* Loading */
+.loading { color: var(--text2); font-size: 13px; padding: 20px; text-align: center; }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .container { grid-template-columns: 1fr; }
+  .summary-grid { grid-template-columns: repeat(2, 1fr); }
+  .alpha-grid { grid-template-columns: repeat(3, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>Toss</span> Trading System</h1>
+  <div class="status-bar">
+    <span><span class="status-dot" id="authDot"></span> <span id="authStatus">확인 중...</span></span>
+    <span style="color:var(--text2)" id="clock"></span>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Account Summary -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">계좌 요약</span>
+      <button class="card-action" onclick="loadAll()">새로고침</button>
+    </div>
+    <div class="summary-grid" id="summaryGrid">
+      <div class="summary-item"><div class="loading"><span class="spinner"></span></div></div>
+    </div>
+  </div>
+
+  <!-- Positions -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">보유 종목</span>
+    </div>
+    <div id="positionsTable"><div class="loading"><span class="spinner"></span> 로딩 중...</div></div>
+  </div>
+
+  <!-- Signals -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">시그널 엔진</span>
+      <button class="card-action" onclick="loadSignals()">분석</button>
+    </div>
+    <div id="signalPanel"><div class="loading">보유종목 로드 후 자동 분석</div></div>
+  </div>
+
+  <!-- Risk Gate -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">리스크 게이트</span>
+    </div>
+    <div id="riskGate"><div class="loading"><span class="spinner"></span></div></div>
+  </div>
+
+  <!-- Buy Evaluator -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">매수 평가 (101 Alphas)</span>
+    </div>
+    <div class="input-row">
+      <input type="text" id="evalSymbol" placeholder="종목 심볼 (예: TSLA, 005930)">
+      <button class="primary" onclick="evaluateBuy()">평가</button>
+    </div>
+    <div id="evalResult" style="margin-top:16px"></div>
+  </div>
+
+  <!-- Protected Stocks -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">보호 종목 (가드레일)</span>
+    </div>
+    <div class="protected-list" id="protectedList"></div>
+    <div class="input-row">
+      <input type="text" id="protectSymbol" placeholder="심볼 (예: AAPL)">
+      <input type="text" id="protectName" placeholder="종목명">
+      <input type="text" id="protectReason" placeholder="사유 (예: 장기보유)">
+      <button class="primary" onclick="addProtected()">추가</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+
+function fmt(n) {
+  if (n == null) return '-';
+  return Number(n).toLocaleString('ko-KR');
+}
+function pct(n) {
+  if (n == null) return '-';
+  const v = (n * 100).toFixed(2);
+  return (n >= 0 ? '+' : '') + v + '%';
+}
+function pctClass(n) { return n >= 0 ? 'positive' : 'negative'; }
+
+// Clock
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('ko-KR');
+}, 1000);
+
+// Auth
+async function checkAuth() {
+  try {
+    const r = await fetch(API + '/api/auth/status');
+    const d = await r.json();
+    const dot = document.getElementById('authDot');
+    const st = document.getElementById('authStatus');
+    if (d.error || d.raw?.includes('No active')) {
+      dot.className = 'status-dot off';
+      st.textContent = '세션 없음';
+    } else {
+      dot.className = 'status-dot on';
+      st.textContent = '세션 활성';
+    }
+  } catch { }
+}
+
+// Summary
+async function loadSummary() {
+  const r = await fetch(API + '/api/account/summary');
+  const d = await r.json();
+  if (d.error) { document.getElementById('summaryGrid').innerHTML = `<div class="loading">${d.error}</div>`; return; }
+  const us = d.markets?.us || {};
+  const kr = d.markets?.kr || {};
+  document.getElementById('summaryGrid').innerHTML = `
+    <div class="summary-item">
+      <div class="summary-label">총 자산</div>
+      <div class="summary-value">${fmt(d.total_asset_amount)}원</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">평가 수익</div>
+      <div class="summary-value ${pctClass(d.profit_rate)}">${fmt(d.evaluated_profit_amount)}원</div>
+      <div class="summary-sub ${pctClass(d.profit_rate)}">${pct(d.profit_rate)}</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">미국주식</div>
+      <div class="summary-value">${fmt(us.evaluated_amount)}원</div>
+      <div class="summary-sub ${pctClass(us.profit_rate)}">${pct(us.profit_rate)}</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">주문 가능</div>
+      <div class="summary-value">${fmt(d.orderable_amount_krw)}원</div>
+      <div class="summary-sub">USD: $${fmt(d.orderable_amount_usd)}</div>
+    </div>
+  `;
+}
+
+// Positions
+async function loadPositions() {
+  const r = await fetch(API + '/api/portfolio/positions');
+  const d = await r.json();
+  if (!Array.isArray(d)) { document.getElementById('positionsTable').innerHTML = `<div class="loading">${d.error || '데이터 없음'}</div>`; return; }
+  let html = `<table><tr><th>종목</th><th>수량</th><th>현재가</th><th>수익률</th><th>오늘</th></tr>`;
+  d.forEach(p => {
+    const sym = p.symbol || p.product_code;
+    const price = p.current_price_usd ? `$${p.current_price_usd}` : `${fmt(p.current_price)}원`;
+    html += `<tr>
+      <td><strong>${sym}</strong><br><span style="color:var(--text2);font-size:11px">${p.name}</span></td>
+      <td class="mono">${typeof p.quantity === 'number' ? p.quantity.toFixed(2) : p.quantity}</td>
+      <td class="mono">${price}</td>
+      <td class="${pctClass(p.profit_rate)}">${pct(p.profit_rate)}</td>
+      <td class="${pctClass(p.daily_profit_rate)}">${pct(p.daily_profit_rate)}</td>
+    </tr>`;
+  });
+  html += '</table>';
+  document.getElementById('positionsTable').innerHTML = html;
+}
+
+// Signals
+async function loadSignals() {
+  document.getElementById('signalPanel').innerHTML = '<div class="loading"><span class="spinner"></span> 분석 중...</div>';
+  const r = await fetch(API + '/api/signal/check-positions');
+  const d = await r.json();
+  if (!Array.isArray(d)) { document.getElementById('signalPanel').innerHTML = `<div class="loading">${d.error || '데이터 없음'}</div>`; return; }
+  let html = '';
+  d.forEach(s => {
+    let badge = '';
+    if (s.action === 'SELL_STOP_LOSS') badge = '<span class="badge badge-red">손절</span>';
+    else if (s.action === 'SELL_TAKE_PROFIT') badge = '<span class="badge badge-green">익절</span>';
+    else if (s.action === 'ALERT_SHARP_DROP') badge = '<span class="badge badge-red">급락</span>';
+    else badge = '<span class="badge badge-blue">보유</span>';
+    html += `<div class="gate-check">
+      ${badge}
+      <strong>${s.symbol}</strong>
+      <span style="color:var(--text2);font-size:12px">${s.reason}</span>
+      <span class="mono ${pctClass(s.profit_rate/100)}" style="margin-left:auto">${s.profit_rate > 0 ? '+' : ''}${s.profit_rate}%</span>
+    </div>`;
+  });
+  document.getElementById('signalPanel').innerHTML = html;
+}
+
+// Risk Gate
+async function loadRiskGate() {
+  const r = await fetch(API + '/api/signal/risk-gate');
+  const d = await r.json();
+  if (d.error) { document.getElementById('riskGate').innerHTML = `<div class="loading">${d.error}</div>`; return; }
+  let html = `<div style="text-align:center;margin-bottom:12px">
+    <span class="badge ${d.passed ? 'badge-green' : 'badge-red'}" style="font-size:14px;padding:6px 16px">
+      ${d.passed ? 'GATE PASSED' : 'GATE BLOCKED'}
+    </span>
+  </div>`;
+  (d.checks || []).forEach(c => {
+    html += `<div class="gate-check">
+      <span class="gate-icon">${c.passed ? '✅' : '🚫'}</span>
+      <span style="font-size:13px">${c.description}</span>
+    </div>`;
+  });
+  if (d.blocked_reason) {
+    html += `<div style="margin-top:8px;padding:8px;background:rgba(239,68,68,0.1);border-radius:6px;font-size:12px;color:var(--red)">${d.blocked_reason}</div>`;
+  }
+  document.getElementById('riskGate').innerHTML = html;
+}
+
+// Evaluate Buy
+async function evaluateBuy() {
+  const sym = document.getElementById('evalSymbol').value.trim();
+  if (!sym) return;
+  document.getElementById('evalResult').innerHTML = '<div class="loading"><span class="spinner"></span> 평가 중...</div>';
+  const r = await fetch(API + `/api/signal/evaluate-buy?symbol=${sym}`);
+  const d = await r.json();
+  if (d.error) { document.getElementById('evalResult').innerHTML = `<div class="loading">${d.error}</div>`; return; }
+
+  const b = d.breakdown || {};
+  let html = `
+    <div style="display:flex;gap:20px;align-items:center">
+      <div class="score-ring grade-${d.grade}">${d.grade}</div>
+      <div>
+        <div style="font-size:20px;font-weight:700">${d.symbol} <span style="color:var(--text2);font-size:14px">${d.name}</span></div>
+        <div class="mono" style="font-size:14px;margin-top:4px">${d.score}/${d.max_score}점 (${d.score_pct}%)</div>
+        <div><span class="badge badge-${d.grade === 'A' ? 'green' : d.grade === 'B' ? 'blue' : d.grade === 'C' ? 'yellow' : 'red'}">${d.recommendation}</span></div>
+      </div>
+    </div>
+    <div class="signal-bar" style="margin-top:16px">
+      <div class="signal-segment" style="width:${(b.volume?.score||0)/130*100}%;background:var(--blue)" title="거래량 ${b.volume?.score||0}/30"></div>
+      <div class="signal-segment" style="width:${(b.momentum?.score||0)/130*100}%;background:var(--green)" title="모멘텀 ${b.momentum?.score||0}/25"></div>
+      <div class="signal-segment" style="width:${(b.price_position?.score||0)/130*100}%;background:var(--yellow)" title="가격위치 ${b.price_position?.score||0}/25"></div>
+      <div class="signal-segment" style="width:${(b.portfolio_fit?.score||0)/130*100}%;background:var(--purple)" title="여력 ${b.portfolio_fit?.score||0}/20"></div>
+      <div class="signal-segment" style="width:${(b.alphas?.score||0)/130*100}%;background:var(--red)" title="알파 ${b.alphas?.score||0}/30"></div>
+    </div>
+    <div style="display:flex;gap:12px;margin-top:4px;font-size:11px;color:var(--text2)">
+      <span>거래량 ${b.volume?.score||0}/30</span>
+      <span>모멘텀 ${b.momentum?.score||0}/25</span>
+      <span>가격 ${b.price_position?.score||0}/25</span>
+      <span>여력 ${b.portfolio_fit?.score||0}/20</span>
+      <span>알파 ${b.alphas?.score||0}/30</span>
+    </div>`;
+
+  // Alphas
+  if (d.alphas) {
+    html += '<div class="alpha-grid">';
+    for (const [key, a] of Object.entries(d.alphas)) {
+      if (typeof a !== 'object' || !a.name) continue;
+      const color = a.value > 0.01 ? 'var(--green)' : a.value < -0.01 ? 'var(--red)' : 'var(--text2)';
+      html += `<div class="alpha-item">
+        <div class="alpha-name">${a.name}</div>
+        <div class="alpha-value" style="color:${color}">${a.value > 0 ? '+' : ''}${a.value}</div>
+        <div class="alpha-interp" style="color:${color}">${a.interpretation}</div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  document.getElementById('evalResult').innerHTML = html;
+}
+document.getElementById('evalSymbol').addEventListener('keydown', e => { if (e.key === 'Enter') evaluateBuy(); });
+
+// Protected Stocks
+async function loadProtected() {
+  const r = await fetch(API + '/api/protected-stocks');
+  const d = await r.json();
+  let html = '';
+  (d.stocks || []).forEach(s => {
+    html += `<div class="protected-tag">
+      <span class="symbol">${s.symbol}</span>
+      <span style="font-size:12px">${s.name}</span>
+      <span style="font-size:11px;color:var(--text2)">${s.reason}</span>
+      <span class="remove" onclick="removeProtected('${s.symbol}')">&times;</span>
+    </div>`;
+  });
+  if (!d.stocks?.length) html = '<span style="color:var(--text2);font-size:13px">보호 종목 없음</span>';
+  document.getElementById('protectedList').innerHTML = html;
+}
+
+async function addProtected() {
+  const symbol = document.getElementById('protectSymbol').value.trim();
+  const name = document.getElementById('protectName').value.trim();
+  const reason = document.getElementById('protectReason').value.trim();
+  if (!symbol) return;
+  await fetch(API + '/api/protected-stocks/add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ symbol, name, reason })
+  });
+  document.getElementById('protectSymbol').value = '';
+  document.getElementById('protectName').value = '';
+  document.getElementById('protectReason').value = '';
+  loadProtected();
+}
+
+async function removeProtected(symbol) {
+  if (!confirm(`${symbol} 보호를 해제하시겠습니까?`)) return;
+  await fetch(API + '/api/protected-stocks/remove', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ symbol })
+  });
+  loadProtected();
+}
+
+// Load all
+async function loadAll() {
+  checkAuth();
+  loadSummary();
+  loadPositions();
+  loadRiskGate();
+  loadProtected();
+  setTimeout(loadSignals, 500);
+}
+
+loadAll();
+// Auto refresh every 60s
+setInterval(loadAll, 60000);
+</script>
+</body>
+</html>
