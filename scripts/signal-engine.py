@@ -95,19 +95,127 @@ def check_positions(positions: list, config: dict) -> list:
     return signals
 
 
+# ─── 101 Formulaic Alphas (Kakushadze, 2016) ───
+
+def compute_alphas(quote: dict) -> dict:
+    """논문 '101 Formulaic Alphas'에서 tossctl 데이터로 계산 가능한 알파를 산출합니다.
+
+    사용 가능 데이터: open, close(=last), high, low, volume, reference_price(전일종가)
+    """
+    import math
+
+    o = quote.get("open", 0) or quote.get("reference_price", 0)  # 시가 (없으면 전일종가)
+    c = quote.get("last", 0) or quote.get("close", 0)            # 현재가/종가
+    h = quote.get("high", 0) or max(o, c)                        # 고가
+    l = quote.get("low", 0) or min(o, c) if min(o, c) > 0 else c # 저가
+    v = quote.get("volume", 0)                                    # 거래량
+    ref = quote.get("reference_price", 0)                         # 전일종가
+
+    alphas = {}
+
+    # --- Alpha#101: 장중 방향 강도 (Intraday Direction Strength) ---
+    # (close - open) / (high - low + 0.001)
+    # +1 = 강한 양봉, -1 = 강한 음봉, 0 = 도지
+    hl_range = h - l + 0.001
+    alpha101 = (c - o) / hl_range if hl_range > 0 else 0
+    alphas["alpha101"] = {
+        "value": round(alpha101, 4),
+        "name": "장중 방향 강도",
+        "interpretation": "강한 양봉" if alpha101 > 0.5 else
+                          "양봉" if alpha101 > 0.1 else
+                          "도지(방향 불확실)" if alpha101 > -0.1 else
+                          "음봉" if alpha101 > -0.5 else "강한 음봉"
+    }
+
+    # --- Alpha#33 변형: 시가-종가 괴리율 ---
+    # 원본: rank(-1 * ((1 - (open / close))^1))
+    # 단일종목 적용: (1 - open/close) → 양수면 상승, 음수면 하락
+    if c > 0:
+        alpha33 = 1 - (o / c)
+    else:
+        alpha33 = 0
+    alphas["alpha33"] = {
+        "value": round(alpha33, 4),
+        "name": "시가-종가 괴리율",
+        "interpretation": "장중 상승" if alpha33 > 0.01 else
+                          "보합" if alpha33 > -0.01 else "장중 하락"
+    }
+
+    # --- Mean Reversion Alpha: 전일종가 대비 현재 괴리 ---
+    # -ln(open / ref_close) → 양수면 갭다운(반등 기대), 음수면 갭업(되돌림 기대)
+    if o > 0 and ref > 0:
+        mean_rev = -math.log(o / ref)
+    else:
+        mean_rev = 0
+    alphas["mean_reversion"] = {
+        "value": round(mean_rev, 4),
+        "name": "평균회귀 시그널",
+        "interpretation": "갭다운 반등 기대" if mean_rev > 0.01 else
+                          "중립" if mean_rev > -0.01 else "갭업 되돌림 기대"
+    }
+
+    # --- Momentum Alpha: 전일 캔들 방향성 ---
+    # ln(ref_close / open_yesterday) → 전일 양봉이면 모멘텀 지속 기대
+    # tossctl에서 전일 시가 없으므로, (ref_close vs current open)으로 근사
+    if ref > 0 and o > 0:
+        momentum = math.log(c / ref) if c > 0 else 0
+    else:
+        momentum = 0
+    alphas["momentum"] = {
+        "value": round(momentum, 4),
+        "name": "모멘텀 시그널",
+        "interpretation": "상승 모멘텀" if momentum > 0.01 else
+                          "중립" if momentum > -0.01 else "하락 모멘텀"
+    }
+
+    # --- Alpha#54 변형: 장중 세력 방향 ---
+    # 원본: (-1 * ((low - close) * (open^5))) / ((low - high) * (close^5))
+    # 단순화: (close - low) / (high - low) → 0=저가 마감, 1=고가 마감
+    if hl_range > 0.001:
+        alpha54 = (c - l) / (h - l) if (h - l) > 0 else 0.5
+    else:
+        alpha54 = 0.5
+    alphas["alpha54"] = {
+        "value": round(alpha54, 4),
+        "name": "장중 가격 위치",
+        "interpretation": "고가권 마감" if alpha54 > 0.7 else
+                          "중간" if alpha54 > 0.3 else "저가권 마감"
+    }
+
+    # --- 종합 알파 점수 (0-30점) ---
+    # 각 알파를 정규화하여 합산
+    score = 0
+
+    # alpha101: -1~+1 → 0~10점 (양봉일수록 높음)
+    score += max(0, min(10, (alpha101 + 1) * 5))
+
+    # mean_reversion: 갭다운(양수)이면 가점 → 0~10점
+    mr_score = max(0, min(10, (mean_rev * 100) + 5))
+    score += mr_score
+
+    # alpha54: 0~1 → 0~10점 (고가권 마감일수록 높음)
+    score += alpha54 * 10
+
+    alphas["composite_score"] = round(score, 1)
+    alphas["composite_max"] = 30
+
+    return alphas
+
+
 # ─── 매수 시그널 평가 ───
 
 def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
-    """종목의 매수 적합성을 점수(0-100)로 평가합니다.
+    """종목의 매수 적합성을 점수(0-130)로 평가합니다.
 
     평가 항목:
     - 거래량 스파이크 (0-30점)
     - 일일 모멘텀 (0-25점)
     - 가격 위치 (0-25점)
     - 포트폴리오 적합성 (0-20점)
+    - 101 Alphas 점수 (0-30점) ← NEW
 
     Returns:
-        dict: {"symbol", "score", "grade", "breakdown", "recommendation"}
+        dict: {"symbol", "score", "grade", "breakdown", "recommendation", "alphas"}
     """
     volume_spike_ratio = config.get("volume_spike_ratio", DEFAULT_CONFIG["volume_spike_ratio"])
     momentum_threshold = config.get("momentum_threshold", DEFAULT_CONFIG["momentum_threshold"])
@@ -193,14 +301,21 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
     breakdown["portfolio_fit"] = {"score": port_score, "max": 20, "value": orderable}
     total_score += port_score
 
-    # 등급
-    if total_score >= 75:
+    # 5. 101 Alphas 점수 (0-30) — Kakushadze (2016)
+    alphas = compute_alphas(quote)
+    alpha_score = alphas["composite_score"]
+    breakdown["alphas"] = {"score": round(alpha_score), "max": 30, "detail": alphas}
+    total_score += alpha_score
+
+    # 등급 (총 130점 만점 기준)
+    pct = total_score / 130 * 100  # 백분율로 정규화
+    if pct >= 70:
         grade = "A"
         recommendation = "STRONG_BUY"
-    elif total_score >= 60:
+    elif pct >= 55:
         grade = "B"
         recommendation = "BUY"
-    elif total_score >= 45:
+    elif pct >= 40:
         grade = "C"
         recommendation = "WATCH"
     else:
@@ -210,10 +325,13 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
     return {
         "symbol": symbol,
         "name": quote.get("name", ""),
-        "score": total_score,
+        "score": round(total_score, 1),
+        "max_score": 130,
+        "score_pct": round(pct, 1),
         "grade": grade,
         "recommendation": recommendation,
         "breakdown": breakdown,
+        "alphas": {k: v for k, v in alphas.items() if k not in ("composite_score", "composite_max")},
         "current_price": last_price,
         "change_rate": round(change_rate * 100, 2),
     }
@@ -293,7 +411,7 @@ def risk_gate(portfolio: dict, config: dict, today_pnl: float = 0, active_positi
 
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "command required: check-positions | evaluate-buy | risk-gate"}))
+        print(json.dumps({"error": "command required: check-positions | evaluate-buy | risk-gate | compute-alphas"}))
         sys.exit(1)
 
     command = sys.argv[1]
@@ -331,6 +449,11 @@ def main():
         today_pnl = float(args.get("today-pnl", "0"))
         active_positions = int(args.get("active-positions", "0"))
         result = risk_gate(portfolio, config, today_pnl, active_positions)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif command == "compute-alphas":
+        quote = json.loads(args.get("quote", "{}"))
+        result = compute_alphas(quote)
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     else:
