@@ -41,6 +41,7 @@ flowchart LR
 | 주문 | `/toss-order` | 매수/매도/취소 (6단계 안전장치) |
 | 내보내기 | `/toss-export` | CSV 내보내기 |
 | **단타 통합** | **`/toss-daytrade`** | **분석→발굴→주문→복기 전체 워크플로우** |
+| **자율 매매** | **`/toss-autotrade`** | **사용자 확인 없이 자동 분석/판단/실행** |
 
 ### 분석 스킬 (claude-trading-skills 연동)
 
@@ -111,6 +112,39 @@ flowchart TD
         RECORD["거래 기록"] --> LESSON["교훈 추출"]
     end
 ```
+
+## 자율 트레이딩 모드 (`/toss-autotrade`)
+
+사용자 확인 없이 Claude가 자동으로 분석/판단/실행하는 모드입니다.
+
+```mermaid
+flowchart TD
+    START(["/loop 5m /toss-autotrade"]) --> SCAN["시장 스캔\n뉴스 + 시세"]
+    SCAN --> CHECK["보유종목 손절/익절 체크"]
+    CHECK --> SL{"손절/익절\n도달?"}
+    SL -- Yes --> AUTO_SELL["자동 매도 실행"]
+    SL -- No --> OPPORTUNITY["매수 기회 탐색"]
+    OPPORTUNITY --> SIGNAL{"시그널?"}
+    SIGNAL -- No --> WAIT["다음 사이클 대기"]
+    SIGNAL -- Yes --> GATE{"리스크 게이트"}
+    GATE -- "한도 초과" --> WAIT
+    GATE -- "통과" --> AUTO_BUY["자동 매수 실행"]
+    AUTO_BUY --> LOG["거래 기록"]
+    AUTO_SELL --> LOG
+    LOG --> DAILY{"일일 손실\n한도 초과?"}
+    DAILY -- Yes --> HALT(["자동 중단"])
+    DAILY -- No --> WAIT
+
+    style HALT fill:#3a0a0a,stroke:#ff0000
+    style GATE fill:#5c1a1a,stroke:#ff4a4a
+```
+
+| 비교 | `/toss-daytrade` | `/toss-autotrade` |
+|------|-------------------|-------------------|
+| 사용자 확인 | 매 주문마다 필요 | 불필요 (자동) |
+| 리스크 한도 | 자산 20% / 손절 -5% | 자산 10% / 손절 -3% (더 보수적) |
+| 적합한 상황 | 직접 판단하며 거래 | 장시간 자동 운영 |
+| `/loop` 연동 | 선택 | 필수 |
 
 ## 리스크 관리
 
