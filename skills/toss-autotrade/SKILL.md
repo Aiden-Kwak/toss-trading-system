@@ -3,6 +3,7 @@ name: toss-autotrade
 description: 토스증권 자율 트레이딩 모드 - 사용자 확인 없이 Claude가 분석/판단/실행을 자동으로 수행. /loop과 연동하여 지속 감시 및 자동매매. 자동매매, 자율거래, 오토트레이딩 요청 시 사용.
 user_invocable: true
 allowed-tools: Bash Read Write Edit Glob Grep WebSearch WebFetch
+effort: low
 ---
 
 # toss-autotrade: 자율 트레이딩 모드
@@ -155,40 +156,88 @@ config 파일 경로: `~/Library/Application Support/tossctl/config.json`
 3. 포지션 한도 도달
 4. 일일 손실 한도 근접
 
-## 실행 순서
+## 속도 최적화 실행 순서
 
-### 매 사이클 (5분 간격 기본)
+단타에서는 판단 후 즉시 실행이 핵심입니다. 아래 원칙을 반드시 따르세요:
+
+### 원칙 1: 병렬 데이터 수집
+
+데이터 수집은 **반드시 병렬 Bash 호출**로 실행합니다. 독립적인 명령은 절대 순차 실행하지 마세요.
 
 ```
-1. tossctl auth status → 세션 확인
-2. tossctl portfolio positions → 보유 포지션 확인
-3. tossctl account summary → 총 자산, 수익/손실 확인
-4. 일일 손실 한도 체크 → 초과 시 중단
-5. 보유종목 시세 체크 → 손절/익절 판단
-   → 해당 시 자동 매도 실행
-6. WebSearch → 시장 뉴스/동향 스캔
-7. 관심 종목 시세 조회 → 매수 기회 탐색
-   → 시그널 발생 시 자동 매수 실행
-8. 거래 발생 시 memory에 기록
-9. 다음 사이클 대기
+[병렬 실행 - 동시에 3개 Bash 호출]
+├── Bash 1: tossctl portfolio positions --output json
+├── Bash 2: tossctl account summary --output json  
+└── Bash 3: tossctl quote batch <보유종목> <관심종목> --output json
+
+→ 3개 결과를 한번에 받아서 즉시 판단
 ```
 
-### 주문 실행 프로세스 (자동)
+### 원칙 2: 사전 권한 부여
+
+세션 시작 시 한번만 grant하고 이후 주문에서는 생략합니다:
 
 ```bash
-# 1. 미리보기
-tossctl order preview --symbol <SYM> --side <buy|sell> --qty <N> --price <P> --output json
-
-# 2. confirm_token 추출
-TOKEN=$(... preview 결과에서 추출)
-
-# 3. 권한 부여
-tossctl order permissions grant --ttl 300
-
-# 4. 실행
-tossctl order place --symbol <SYM> --side <buy|sell> --qty <N> --price <P> \
-  --execute --dangerously-skip-permissions --confirm $TOKEN --output json
+# 세션 시작 시 1회만 실행 (TTL 1시간)
+tossctl order permissions grant --ttl 3600
 ```
+
+### 원칙 3: 원샷 주문 스크립트
+
+preview → grant 체크 → place를 **하나의 스크립트**로 묶어 Bash 1회 호출로 실행합니다:
+
+```bash
+# 원샷 주문 (preview + grant확인 + place를 한번에)
+bash /Users/aiden-kwak/Desktop/Personal/Stock/toss-trading-system/scripts/quick-order.sh \
+  --symbol TSLA --side buy --qty 1 --price 25000
+```
+
+### 원칙 4: 사이클 분리 (빠른 감시 vs 깊은 분석)
+
+**빠른 감시 사이클 (매 2-5분, 최소 도구 호출)**:
+```
+[병렬] portfolio + quote batch → 손절/익절 체크 → 해당 시 즉시 원샷 주문
+```
+도구 호출: 2-3회, 소요: ~5초
+
+**깊은 분석 사이클 (매 15-30분)**:
+```
+[병렬] WebSearch(뉴스) + portfolio + quote → 종합 판단 → 매수 기회 탐색
+```
+도구 호출: 3-5회, 소요: ~10초
+
+매 사이클마다 뉴스를 검색하지 않습니다. 빠른 감시가 기본이고, N번째 사이클마다 깊은 분석을 합니다.
+
+### 원칙 5: 판단은 한번에
+
+데이터를 모두 수집한 뒤 **한번의 추론**으로 모든 포지션에 대한 결정을 내립니다.
+종목별로 순차 판단하지 마세요.
+
+### 매 사이클 실행 순서 (최적화)
+
+```
+[빠른 감시 사이클]
+1. 병렬 Bash 3개: positions + summary + quote batch   (~2초)
+2. 한번에 판단: 손절/익절 체크 + 기회 탐색            (~1초, effort: low)
+3. 액션 필요 시: 원샷 주문 스크립트                    (~3초)
+4. 거래 발생 시: memory 기록                           (~1초)
+────────────────────────────────────────────────
+합계: ~4초(관망) / ~7초(주문 실행)
+```
+
+### 주문 실행 (원샷 스크립트)
+
+```bash
+# quick-order.sh가 preview→grant확인→place를 한번에 처리
+bash /Users/aiden-kwak/Desktop/Personal/Stock/toss-trading-system/scripts/quick-order.sh \
+  --symbol <SYM> --side <buy|sell> --qty <N> --price <P> --output json
+```
+
+이 스크립트가 내부적으로:
+1. `tossctl order preview` → confirm_token 추출
+2. `tossctl order permissions status` → 활성이면 skip, 아니면 grant
+3. `tossctl order place --execute --confirm <token>` → 실행
+를 순차적으로 처리합니다.
 
 ## /loop 연동
 
