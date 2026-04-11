@@ -226,61 +226,131 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
     last_price = quote.get("last", 0)
     ref_price = quote.get("reference_price", 0)
 
+    # 시장 판별: 한국주식 vs 미국주식
+    # - market_code: KSP(코스피), KSQ(코스닥) → 한국 / NSQ, NYS 등 → 미국
+    # - symbol이 숫자로만 구성 또는 A로 시작하는 6-7자리 → 한국
+    market_code = quote.get("market_code", "")
+    is_kr = (
+        market_code in ("KSP", "KSQ") or
+        symbol.replace("A", "").isdigit() or
+        (symbol.isdigit() and len(symbol) == 6)
+    )
+    market_label = "KR" if is_kr else "US"
+
     breakdown = {}
     total_score = 0
 
-    # 1. 거래량 점수 (0-30)
-    # 거래량 자체로는 "평소"를 모르므로, 절대량 + 변화율로 근사
-    # 10M+ 고거래량 종목에 가점
-    if volume >= 50_000_000:
-        vol_score = 30
-    elif volume >= 20_000_000:
-        vol_score = 25
-    elif volume >= 10_000_000:
-        vol_score = 20
-    elif volume >= 5_000_000:
-        vol_score = 15
-    elif volume >= 1_000_000:
-        vol_score = 10
+    # 1. 거래량 점수 (0-30) — 시장별 기준 분리
+    #
+    # 미국: 대형주 중심, 일 거래량 수천만~수억주
+    #   50M+→30  20M+→25  10M+→20  5M+→15  1M+→10
+    #
+    # 한국: 중소형주도 단타 대상, 거래량 자체가 적음
+    #   - 코스피 대형주: 일 500만주면 활발
+    #   - 코스닥 중소형: 일 100만주면 활발, 300만주면 폭발적
+    #   5M+→30  3M+→25  1M+→20  500K+→15  100K+→10
+    if is_kr:
+        if volume >= 5_000_000:
+            vol_score = 30
+        elif volume >= 3_000_000:
+            vol_score = 25
+        elif volume >= 1_000_000:
+            vol_score = 20
+        elif volume >= 500_000:
+            vol_score = 15
+        elif volume >= 100_000:
+            vol_score = 10
+        else:
+            vol_score = 5
     else:
-        vol_score = 5
-    breakdown["volume"] = {"score": vol_score, "max": 30, "value": volume}
+        if volume >= 50_000_000:
+            vol_score = 30
+        elif volume >= 20_000_000:
+            vol_score = 25
+        elif volume >= 10_000_000:
+            vol_score = 20
+        elif volume >= 5_000_000:
+            vol_score = 15
+        elif volume >= 1_000_000:
+            vol_score = 10
+        else:
+            vol_score = 5
+    breakdown["volume"] = {"score": vol_score, "max": 30, "value": volume, "market": market_label}
     total_score += vol_score
 
-    # 2. 모멘텀 점수 (0-25)
-    # 양의 모멘텀이면 가점, 과도하면 감점 (고점 추격 위험)
-    if 0.01 <= change_rate <= 0.05:
-        mom_score = 25  # 적당한 상승
-    elif 0.05 < change_rate <= 0.10:
-        mom_score = 15  # 강한 상승 (과열 주의)
-    elif change_rate > 0.10:
-        mom_score = 5   # 과열 (고점 추격 위험)
-    elif -0.02 <= change_rate < 0.01:
-        mom_score = 15  # 보합/소폭 하락 (저가 매수 기회 가능)
-    elif -0.05 <= change_rate < -0.02:
-        mom_score = 10  # 하락 중 (바닥 확인 필요)
+    # 2. 모멘텀 점수 (0-25) — 시장별 기준 분리
+    #
+    # 미국: 일일 가격제한 없음. 10%+ 상승은 과열.
+    #   +1~5%→25  +5~10%→15  +10%+→5(과열)
+    #
+    # 한국: 가격제한 ±30%. 테마주는 10-15% 상승이 흔함.
+    #   10%+ 상승도 정상적인 모멘텀일 수 있음.
+    #   +1~8%→25  +8~15%→20  +15~25%→15  +25%+→5(상한가 근접 과열)
+    if is_kr:
+        if 0.01 <= change_rate <= 0.08:
+            mom_score = 25  # 적당한 상승
+        elif 0.08 < change_rate <= 0.15:
+            mom_score = 20  # 강한 상승 (한국에선 정상 범위)
+        elif 0.15 < change_rate <= 0.25:
+            mom_score = 15  # 급등 (테마주 가능성)
+        elif change_rate > 0.25:
+            mom_score = 5   # 상한가 근접 (과열)
+        elif -0.03 <= change_rate < 0.01:
+            mom_score = 15  # 보합/소폭 하락
+        elif -0.08 <= change_rate < -0.03:
+            mom_score = 10  # 하락 중
+        else:
+            mom_score = 0   # 급락 (-8% 이하)
     else:
-        mom_score = 0   # 급락 (진입 위험)
-    breakdown["momentum"] = {"score": mom_score, "max": 25, "value": round(change_rate * 100, 2)}
+        if 0.01 <= change_rate <= 0.05:
+            mom_score = 25
+        elif 0.05 < change_rate <= 0.10:
+            mom_score = 15
+        elif change_rate > 0.10:
+            mom_score = 5
+        elif -0.02 <= change_rate < 0.01:
+            mom_score = 15
+        elif -0.05 <= change_rate < -0.02:
+            mom_score = 10
+        else:
+            mom_score = 0
+    breakdown["momentum"] = {"score": mom_score, "max": 25, "value": round(change_rate * 100, 2), "market": market_label}
     total_score += mom_score
 
-    # 3. 가격 위치 점수 (0-25)
-    # 전일 대비 위치로 근사
+    # 3. 가격 위치 점수 (0-25) — 시장별 기준 분리
+    #
+    # 미국: 변동폭 작음. 전일比 ±2%가 보합, 5%+가 큰 움직임
+    # 한국: 변동폭 큼. 전일比 ±3%가 보합, 10%+가 큰 움직임
+    #   한국에서 +8% 진입은 미국의 +3% 진입과 비슷한 위험도
     if ref_price > 0:
         price_vs_ref = (last_price - ref_price) / ref_price
-        if -0.02 <= price_vs_ref <= 0.02:
-            price_score = 20  # 전일 종가 근처 (안정적 진입)
-        elif 0.02 < price_vs_ref <= 0.05:
-            price_score = 15  # 소폭 위
-        elif price_vs_ref > 0.05:
-            price_score = 5   # 크게 위 (추격 매수)
-        elif -0.05 <= price_vs_ref < -0.02:
-            price_score = 25  # 소폭 아래 (매수 기회)
+        if is_kr:
+            if -0.03 <= price_vs_ref <= 0.03:
+                price_score = 20  # 전일 근처 (안정적)
+            elif 0.03 < price_vs_ref <= 0.08:
+                price_score = 15  # 소폭 위
+            elif 0.08 < price_vs_ref <= 0.15:
+                price_score = 10  # 위 (추격 주의)
+            elif price_vs_ref > 0.15:
+                price_score = 5   # 크게 위 (추격 매수 위험)
+            elif -0.08 <= price_vs_ref < -0.03:
+                price_score = 25  # 소폭 아래 (매수 기회)
+            else:
+                price_score = 10  # 크게 아래 (추가 하락 위험)
         else:
-            price_score = 10  # 크게 아래 (추가 하락 위험)
+            if -0.02 <= price_vs_ref <= 0.02:
+                price_score = 20
+            elif 0.02 < price_vs_ref <= 0.05:
+                price_score = 15
+            elif price_vs_ref > 0.05:
+                price_score = 5
+            elif -0.05 <= price_vs_ref < -0.02:
+                price_score = 25
+            else:
+                price_score = 10
     else:
         price_score = 10
-    breakdown["price_position"] = {"score": price_score, "max": 25, "value": round(last_price, 2)}
+    breakdown["price_position"] = {"score": price_score, "max": 25, "value": round(last_price, 2), "market": market_label}
     total_score += price_score
 
     # 4. 포트폴리오 적합성 (0-20)
