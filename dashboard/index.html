@@ -103,6 +103,30 @@ button.primary:hover { opacity: 0.9; }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Pipeline */
+.pipeline { display: flex; gap: 0; align-items: stretch; overflow-x: auto; padding: 8px 0; }
+.pipe-stage { flex: 1; min-width: 120px; position: relative; text-align: center; padding: 12px 8px; }
+.pipe-stage::after { content: ''; position: absolute; top: 50%; right: -12px; width: 24px; height: 2px; background: var(--border); z-index: 1; }
+.pipe-stage:last-child::after { display: none; }
+.pipe-icon { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 8px; font-size: 18px; border: 2px solid var(--border); }
+.pipe-icon.pass { border-color: var(--green); background: rgba(34,197,94,0.1); }
+.pipe-icon.fail { border-color: var(--red); background: rgba(239,68,68,0.1); }
+.pipe-icon.wait { border-color: var(--text2); background: var(--surface2); opacity: 0.5; }
+.pipe-icon.active { border-color: var(--blue); background: rgba(59,130,246,0.15); animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.3); } 50% { box-shadow: 0 0 0 8px rgba(59,130,246,0); } }
+.pipe-label { font-size: 11px; color: var(--text2); margin-bottom: 4px; }
+.pipe-value { font-size: 12px; font-weight: 600; }
+.pipe-detail { margin-top: 16px; }
+.pipe-signals { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.pipe-signal-card { background: var(--surface2); border-radius: 8px; padding: 10px 14px; min-width: 180px; flex: 1; }
+.pipe-signal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.decision-box { text-align: center; margin-top: 16px; padding: 16px; border-radius: 10px; border: 2px solid; }
+.decision-box.BUY { border-color: var(--green); background: rgba(34,197,94,0.08); }
+.decision-box.SELL { border-color: var(--red); background: rgba(239,68,68,0.08); }
+.decision-box.HOLD { border-color: var(--text2); background: var(--surface2); }
+.decision-box.BLOCKED { border-color: var(--yellow); background: rgba(234,179,8,0.08); }
+.decision-label { font-size: 24px; font-weight: 800; }
+
 /* Maintenance Banner */
 .maint-banner { display: none; background: linear-gradient(135deg, #92400e, #b45309); border-bottom: 2px solid #f59e0b; padding: 14px 24px; text-align: center; }
 .maint-banner.active { display: block; }
@@ -139,6 +163,17 @@ button.primary:hover { opacity: 0.9; }
 </div>
 
 <div class="container">
+  <!-- AI Pipeline -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">AI 진입 판단 파이프라인</span>
+      <button class="card-action" onclick="loadPipeline()">분석 실행</button>
+    </div>
+    <div id="pipelinePanel">
+      <div class="loading">분석 실행을 클릭하세요</div>
+    </div>
+  </div>
+
   <!-- Account Summary -->
   <div class="card full-width">
     <div class="card-header">
@@ -477,6 +512,105 @@ async function removeProtected(symbol) {
 }
 
 // Load all
+// AI Pipeline
+async function loadPipeline() {
+  const panel = document.getElementById('pipelinePanel');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> AI 분석 파이프라인 실행 중...</div>';
+
+  const r = await fetch(API + '/api/ai/pipeline');
+  const d = await r.json();
+  const p = d.phases || {};
+  const decision = d.decision || {};
+
+  // 단계 상태 결정
+  const stages = [
+    { key: 'session', icon: '🔐', label: '세션', ok: p.session?.ok },
+    { key: 'maintenance', icon: '🔧', label: '시스템', ok: p.maintenance?.ok },
+    { key: 'data', icon: '📊', label: '데이터 수집', ok: p.data?.ok },
+    { key: 'position_signals', icon: '📡', label: '포지션 시그널', ok: p.position_signals?.ok },
+    { key: 'risk_gate', icon: '🛡️', label: '리스크 게이트', ok: p.risk_gate?.ok },
+    { key: 'evaluation', icon: '🧠', label: '매수 평가', ok: p.evaluation?.ok },
+  ];
+
+  // 파이프라인 바
+  let firstFail = stages.findIndex(s => s.ok === false || s.ok === undefined);
+  if (firstFail === -1) firstFail = stages.length;
+
+  let html = '<div class="pipeline">';
+  stages.forEach((s, i) => {
+    let cls = 'wait';
+    if (i < firstFail) cls = 'pass';
+    else if (i === firstFail && s.ok === false) cls = 'fail';
+    else if (i === firstFail) cls = 'active';
+    html += `<div class="pipe-stage">
+      <div class="pipe-icon ${cls}">${s.icon}</div>
+      <div class="pipe-label">${s.label}</div>
+      <div class="pipe-value" style="color:${cls === 'pass' ? 'var(--green)' : cls === 'fail' ? 'var(--red)' : 'var(--text2)'}">
+        ${cls === 'pass' ? 'PASS' : cls === 'fail' ? 'FAIL' : cls === 'active' ? '...' : '-'}
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+
+  // 포지션 시그널 상세
+  const signals = p.position_signals?.signals || [];
+  if (signals.length > 0) {
+    html += '<div class="pipe-detail"><div style="font-size:12px;color:var(--text2);margin-bottom:8px">보유종목 시그널</div><div class="pipe-signals">';
+    signals.forEach(s => {
+      let actionBadge = '';
+      if (s.action === 'SELL_STOP_LOSS') actionBadge = '<span class="badge badge-red">손절 매도</span>';
+      else if (s.action === 'SELL_TAKE_PROFIT') actionBadge = '<span class="badge badge-green">익절 매도</span>';
+      else if (s.action === 'ALERT_SHARP_DROP') actionBadge = '<span class="badge badge-red">급락 경고</span>';
+      else actionBadge = '<span class="badge badge-blue">보유 유지</span>';
+      const profitClass = s.profit_rate >= 0 ? 'positive' : 'negative';
+      html += `<div class="pipe-signal-card">
+        <div class="pipe-signal-header">
+          <strong>${s.symbol}</strong> ${actionBadge}
+        </div>
+        <div style="font-size:11px;color:var(--text2)">${s.name}</div>
+        <div class="mono ${profitClass}" style="font-size:14px;margin-top:4px">${s.profit_rate > 0 ? '+' : ''}${s.profit_rate}%</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px">${s.reason}</div>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // 매수 평가 결과
+  const evals = p.evaluation?.results || [];
+  if (evals.length > 0) {
+    html += '<div class="pipe-detail"><div style="font-size:12px;color:var(--text2);margin-bottom:8px">매수 평가 (보유종목 기준)</div><div class="pipe-signals">';
+    evals.forEach(e => {
+      const gradeColor = e.grade === 'A' ? 'var(--green)' : e.grade === 'B' ? 'var(--blue)' : e.grade === 'C' ? 'var(--yellow)' : 'var(--red)';
+      html += `<div class="pipe-signal-card">
+        <div class="pipe-signal-header">
+          <strong>${e.symbol}</strong>
+          <span class="badge" style="background:${gradeColor}20;color:${gradeColor}">${e.grade} ${e.recommendation}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text2)">${e.name}</div>
+        <div class="mono" style="font-size:13px;margin-top:4px">${e.score}/${e.max_score} (${e.pct}%)</div>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // 최종 판단
+  const act = decision.action || 'HOLD';
+  const actLabel = act === 'BUY' ? '매수 진입 가능' : act === 'SELL' ? '매도 시그널 감지' : act === 'HOLD' ? '관망 (시그널 없음)' : '차단됨 (세션/점검)';
+  const actIcon = act === 'BUY' ? '🟢' : act === 'SELL' ? '🔴' : act === 'HOLD' ? '⚪' : '🟡';
+  html += `<div class="decision-box ${act}">
+    <div style="font-size:14px;color:var(--text2);margin-bottom:4px">AI 최종 판단</div>
+    <div class="decision-label">${actIcon} ${actLabel}</div>
+    <div style="font-size:12px;color:var(--text2);margin-top:8px">
+      게이트: ${decision.gate_passed ? '✅ 통과' : '🚫 차단'} &nbsp;|&nbsp;
+      매도 시그널: ${decision.sell_signals ? '🔴 있음' : '없음'} &nbsp;|&nbsp;
+      매수 후보: ${decision.buy_candidates ? '🟢 있음' : '없음'}
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:4px">${d.timestamp || ''}</div>
+  </div>`;
+
+  panel.innerHTML = html;
+}
+
 async function loadAll() {
   checkMaintenance();
   checkAuth();

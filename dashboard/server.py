@@ -219,6 +219,106 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 self._json_response(quote)
 
+        elif path == "/api/ai/pipeline":
+            # AI 진입 판단 파이프라인: 전체 상태를 한번에 반환
+            import datetime
+            pipeline = {"timestamp": datetime.datetime.now().isoformat(), "phases": {}}
+
+            # Phase 1: 세션
+            auth = run_tossctl("auth", "status")
+            session_ok = not (isinstance(auth, dict) and (auth.get("error") or auth.get("raw", "").startswith("No")))
+            pipeline["phases"]["session"] = {"ok": session_ok, "detail": auth}
+
+            # Phase 2: 점검 확인
+            maint = check_maintenance_curl()
+            maint_ok = not (maint and maint.get("maintenance"))
+            pipeline["phases"]["maintenance"] = {"ok": maint_ok, "detail": maint}
+
+            if session_ok and maint_ok:
+                # Phase 3: 포트폴리오 & 요약
+                summary = run_tossctl("account", "summary")
+                positions = run_tossctl("portfolio", "positions")
+                pipeline["phases"]["data"] = {
+                    "ok": isinstance(positions, list),
+                    "position_count": len(positions) if isinstance(positions, list) else 0,
+                    "total_asset": summary.get("total_asset_amount", 0) if isinstance(summary, dict) else 0,
+                    "orderable": summary.get("orderable_amount_krw", 0) if isinstance(summary, dict) else 0,
+                }
+
+                # Phase 4: 보유종목 시그널
+                if isinstance(positions, list) and positions:
+                    signals = run_signal_engine("check-positions", positions=positions)
+                    actions = []
+                    if isinstance(signals, list):
+                        for s in signals:
+                            actions.append({
+                                "symbol": s.get("symbol", ""),
+                                "name": s.get("name", ""),
+                                "action": s.get("action", "HOLD"),
+                                "reason": s.get("reason", ""),
+                                "urgency": s.get("urgency", "NONE"),
+                                "profit_rate": s.get("profit_rate", 0),
+                            })
+                    pipeline["phases"]["position_signals"] = {"ok": True, "signals": actions}
+
+                    # Phase 5: 리스크 게이트
+                    active = len([p for p in positions if p.get("quantity", 0) > 0])
+                    gate = run_signal_engine(
+                        "risk-gate", portfolio=summary,
+                        **{"today-pnl": "0", "active-positions": str(active)}
+                    )
+                    pipeline["phases"]["risk_gate"] = {
+                        "ok": gate.get("passed", False) if isinstance(gate, dict) else False,
+                        "detail": gate,
+                    }
+
+                    # Phase 6: 보유종목 시세로 매수 평가 (관심종목 시뮬레이션)
+                    # 보유종목 심볼 추출해서 시세 조회 후 evaluate
+                    symbols = [p.get("symbol", p.get("product_code", "")) for p in positions if p.get("quantity", 0) > 0]
+                    us_symbols = [s for s in symbols if not s.replace("A","").isdigit()]
+                    if us_symbols:
+                        quotes = run_tossctl("quote", "batch", *us_symbols[:5])
+                        evals = []
+                        if isinstance(quotes, list):
+                            for q in quotes:
+                                ev = run_signal_engine("evaluate-buy", quote=q, portfolio=summary)
+                                if isinstance(ev, dict) and "error" not in ev:
+                                    evals.append({
+                                        "symbol": ev.get("symbol", ""),
+                                        "name": ev.get("name", ""),
+                                        "score": ev.get("score", 0),
+                                        "max_score": ev.get("max_score", 130),
+                                        "pct": ev.get("score_pct", 0),
+                                        "grade": ev.get("grade", "D"),
+                                        "recommendation": ev.get("recommendation", "SKIP"),
+                                    })
+                        pipeline["phases"]["evaluation"] = {"ok": True, "results": evals}
+                else:
+                    pipeline["phases"]["position_signals"] = {"ok": True, "signals": []}
+                    pipeline["phases"]["risk_gate"] = {"ok": True, "detail": {"passed": True, "checks": []}}
+                    pipeline["phases"]["evaluation"] = {"ok": True, "results": []}
+
+                # 최종 판단
+                gate_passed = pipeline["phases"]["risk_gate"]["ok"]
+                has_sell_signal = any(
+                    s["action"].startswith("SELL")
+                    for s in pipeline["phases"].get("position_signals", {}).get("signals", [])
+                )
+                has_buy_candidate = any(
+                    e["grade"] in ("A", "B")
+                    for e in pipeline["phases"].get("evaluation", {}).get("results", [])
+                )
+                pipeline["decision"] = {
+                    "action": "SELL" if has_sell_signal else ("BUY" if gate_passed and has_buy_candidate else "HOLD"),
+                    "gate_passed": gate_passed,
+                    "sell_signals": has_sell_signal,
+                    "buy_candidates": has_buy_candidate,
+                }
+            else:
+                pipeline["decision"] = {"action": "BLOCKED", "gate_passed": False, "sell_signals": False, "buy_candidates": False}
+
+            self._json_response(pipeline)
+
         else:
             self._json_response({"error": "not found"}, 404)
 
