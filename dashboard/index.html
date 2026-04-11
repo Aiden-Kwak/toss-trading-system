@@ -6,180 +6,125 @@
 <title>Toss Trading System</title>
 <style>
 :root {
-  --bg: #0f1117;
-  --surface: #1a1d27;
-  --surface2: #242836;
-  --border: #2d3348;
-  --text: #e4e6f0;
-  --text2: #8b8fa3;
-  --green: #22c55e;
-  --red: #ef4444;
-  --yellow: #eab308;
-  --blue: #3b82f6;
-  --purple: #a855f7;
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #242836; --border: #2d3348;
+  --text: #e4e6f0; --text2: #8b8fa3;
+  --green: #22c55e; --red: #ef4444; --yellow: #eab308; --blue: #3b82f6; --purple: #a855f7;
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, 'Pretendard', sans-serif; background: var(--bg); color: var(--text); }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system,'Pretendard',sans-serif; background:var(--bg); color:var(--text); }
+.header { background:var(--surface); border-bottom:1px solid var(--border); padding:12px 24px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:10; }
+.header h1 { font-size:18px; font-weight:600; } .header h1 span { color:var(--blue); }
+.status-bar { display:flex; gap:16px; align-items:center; font-size:13px; }
+.status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.status-dot.on { background:var(--green); box-shadow:0 0 6px var(--green); } .status-dot.off { background:var(--red); }
 
-/* Layout */
-.header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
-.header h1 { font-size: 18px; font-weight: 600; }
-.header h1 span { color: var(--blue); }
-.status-bar { display: flex; gap: 16px; align-items: center; font-size: 13px; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.status-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.status-dot.off { background: var(--red); }
+/* Tabs */
+.tab-bar { display:flex; background:var(--surface); border-bottom:1px solid var(--border); padding:0 24px; position:sticky; top:49px; z-index:9; }
+.tab { padding:12px 20px; font-size:13px; font-weight:500; color:var(--text2); cursor:pointer; border-bottom:2px solid transparent; transition:all 0.2s; }
+.tab:hover { color:var(--text); background:var(--surface2); }
+.tab.active { color:var(--blue); border-bottom-color:var(--blue); }
+.tab-page { display:none; } .tab-page.active { display:block; }
 
-.container { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
-.full-width { grid-column: 1 / -1; }
-
-/* Cards */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
-.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.card-title { font-size: 14px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
-.card-action { font-size: 12px; color: var(--blue); cursor: pointer; border: 1px solid var(--blue); padding: 4px 10px; border-radius: 6px; background: none; }
-.card-action:hover { background: rgba(59,130,246,0.15); }
-
-/* Summary */
-.summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-.summary-item { background: var(--surface2); border-radius: 8px; padding: 14px; }
-.summary-label { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
-.summary-value { font-size: 22px; font-weight: 700; }
-.summary-sub { font-size: 12px; margin-top: 2px; }
-.positive { color: var(--green); }
-.negative { color: var(--red); }
-
-/* Table */
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; padding: 10px 12px; color: var(--text2); font-weight: 500; border-bottom: 1px solid var(--border); font-size: 12px; }
-td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
-tr:hover td { background: var(--surface2); }
-.mono { font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; }
-
-/* Badges */
-.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-.badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
-.badge-red { background: rgba(239,68,68,0.15); color: var(--red); }
-.badge-yellow { background: rgba(234,179,8,0.15); color: var(--yellow); }
-.badge-blue { background: rgba(59,130,246,0.15); color: var(--blue); }
-.badge-purple { background: rgba(168,85,247,0.15); color: var(--purple); }
-
-/* Signal */
-.signal-bar { display: flex; gap: 4px; align-items: center; margin-top: 8px; }
-.signal-segment { height: 6px; border-radius: 3px; }
-.alpha-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 12px; }
-.alpha-item { background: var(--surface2); border-radius: 6px; padding: 10px; text-align: center; }
-.alpha-value { font-size: 18px; font-weight: 700; margin: 4px 0; }
-.alpha-name { font-size: 11px; color: var(--text2); }
-.alpha-interp { font-size: 10px; margin-top: 2px; }
-
-/* Risk Gate */
-.gate-check { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.gate-icon { font-size: 16px; }
-
-/* Protected */
-.protected-list { display: flex; flex-wrap: wrap; gap: 8px; }
-.protected-tag { display: flex; align-items: center; gap: 6px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
-.protected-tag .symbol { font-weight: 700; color: var(--yellow); }
-.protected-tag .remove { cursor: pointer; color: var(--text2); font-size: 16px; }
-.protected-tag .remove:hover { color: var(--red); }
-
-/* Input */
-.input-row { display: flex; gap: 8px; margin-top: 12px; }
-input[type="text"] { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; flex: 1; }
-input[type="text"]::placeholder { color: var(--text2); }
-button.primary { background: var(--blue); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
-button.primary:hover { opacity: 0.9; }
-
-/* Score */
-.score-ring { width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800; margin: 0 auto; }
-.grade-A { border: 3px solid var(--green); color: var(--green); }
-.grade-B { border: 3px solid var(--blue); color: var(--blue); }
-.grade-C { border: 3px solid var(--yellow); color: var(--yellow); }
-.grade-D { border: 3px solid var(--red); color: var(--red); }
-
-/* Loading */
-.loading { color: var(--text2); font-size: 13px; padding: 20px; text-align: center; }
-.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* Suggestions */
-.suggest-card { background: var(--surface2); border-radius: 8px; padding: 14px; margin-bottom: 10px; border-left: 3px solid; }
-.suggest-card.warning { border-left-color: var(--yellow); }
-.suggest-card.success { border-left-color: var(--green); }
-.suggest-card.danger { border-left-color: var(--red); }
-.suggest-card.info { border-left-color: var(--blue); }
-.suggest-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-.suggest-desc { font-size: 12px; color: var(--text2); margin-bottom: 8px; }
-.suggest-evidence { font-size: 11px; color: var(--text2); font-style: italic; margin-bottom: 8px; }
-.suggest-params { display: flex; align-items: center; gap: 12px; font-size: 12px; }
-.suggest-params .current { color: var(--text2); text-decoration: line-through; }
-.suggest-params .arrow { color: var(--text2); }
-.suggest-params .suggested { color: var(--green); font-weight: 700; }
-.suggest-apply { background: var(--green); color: #000; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; }
-.suggest-apply:hover { opacity: 0.85; }
-.suggest-applied { background: var(--surface); color: var(--text2); border: 1px solid var(--border); padding: 4px 12px; border-radius: 4px; font-size: 11px; }
-
-/* Stats grid */
-.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
-.stat-mini { background: var(--surface2); border-radius: 6px; padding: 10px; text-align: center; }
-.stat-mini-value { font-size: 18px; font-weight: 700; }
-.stat-mini-label { font-size: 10px; color: var(--text2); margin-top: 2px; }
-
-/* Pattern bars */
-.pattern-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
-.pattern-label { width: 60px; font-weight: 600; }
-.pattern-bar { height: 16px; border-radius: 3px; min-width: 2px; }
-.pattern-value { color: var(--text2); font-size: 11px; }
-
-/* Pipeline */
-.pipeline { display: flex; gap: 0; align-items: stretch; overflow-x: auto; padding: 8px 0; }
-.pipe-stage { flex: 1; min-width: 120px; position: relative; text-align: center; padding: 12px 8px; }
-.pipe-stage::after { content: ''; position: absolute; top: 50%; right: -12px; width: 24px; height: 2px; background: var(--border); z-index: 1; }
-.pipe-stage:last-child::after { display: none; }
-.pipe-icon { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 8px; font-size: 18px; border: 2px solid var(--border); }
-.pipe-icon.pass { border-color: var(--green); background: rgba(34,197,94,0.1); }
-.pipe-icon.fail { border-color: var(--red); background: rgba(239,68,68,0.1); }
-.pipe-icon.wait { border-color: var(--text2); background: var(--surface2); opacity: 0.5; }
-.pipe-icon.active { border-color: var(--blue); background: rgba(59,130,246,0.15); animation: pulse 1.5s infinite; }
-@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.3); } 50% { box-shadow: 0 0 0 8px rgba(59,130,246,0); } }
-.pipe-label { font-size: 11px; color: var(--text2); margin-bottom: 4px; }
-.pipe-value { font-size: 12px; font-weight: 600; }
-.pipe-detail { margin-top: 16px; }
-.pipe-signals { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.pipe-signal-card { background: var(--surface2); border-radius: 8px; padding: 10px 14px; min-width: 180px; flex: 1; }
-.pipe-signal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.decision-box { text-align: center; margin-top: 16px; padding: 16px; border-radius: 10px; border: 2px solid; }
-.decision-box.BUY { border-color: var(--green); background: rgba(34,197,94,0.08); }
-.decision-box.SELL { border-color: var(--red); background: rgba(239,68,68,0.08); }
-.decision-box.HOLD { border-color: var(--text2); background: var(--surface2); }
-.decision-box.BLOCKED { border-color: var(--yellow); background: rgba(234,179,8,0.08); }
-.decision-label { font-size: 24px; font-weight: 800; }
-
-/* Maintenance Banner */
-.maint-banner { display: none; background: linear-gradient(135deg, #92400e, #b45309); border-bottom: 2px solid #f59e0b; padding: 14px 24px; text-align: center; }
-.maint-banner.active { display: block; }
-.maint-icon { font-size: 18px; margin-right: 8px; }
-.maint-text { font-size: 14px; font-weight: 600; color: #fef3c7; }
-.maint-time { font-size: 12px; color: #fde68a; margin-top: 4px; }
-.maint-countdown { font-size: 13px; color: #fff; font-weight: 700; margin-left: 8px; }
-
-/* Responsive */
-@media (max-width: 768px) {
-  .container { grid-template-columns: 1fr; }
-  .summary-grid { grid-template-columns: repeat(2, 1fr); }
-  .alpha-grid { grid-template-columns: repeat(3, 1fr); }
-}
+.container { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px 24px; max-width:1400px; margin:0 auto; }
+.full-width { grid-column:1/-1; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px; }
+.card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+.card-title { font-size:14px; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; }
+.card-action { font-size:12px; color:var(--blue); cursor:pointer; border:1px solid var(--blue); padding:4px 10px; border-radius:6px; background:none; }
+.card-action:hover { background:rgba(59,130,246,0.15); }
+.summary-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+.summary-item { background:var(--surface2); border-radius:8px; padding:14px; }
+.summary-label { font-size:12px; color:var(--text2); margin-bottom:4px; }
+.summary-value { font-size:22px; font-weight:700; } .summary-sub { font-size:12px; margin-top:2px; }
+.positive { color:var(--green); } .negative { color:var(--red); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; padding:10px 12px; color:var(--text2); font-weight:500; border-bottom:1px solid var(--border); font-size:12px; }
+td { padding:10px 12px; border-bottom:1px solid var(--border); }
+tr:hover td { background:var(--surface2); }
+.mono { font-family:'SF Mono','Menlo',monospace; font-size:12px; }
+.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.badge-green { background:rgba(34,197,94,0.15); color:var(--green); }
+.badge-red { background:rgba(239,68,68,0.15); color:var(--red); }
+.badge-yellow { background:rgba(234,179,8,0.15); color:var(--yellow); }
+.badge-blue { background:rgba(59,130,246,0.15); color:var(--blue); }
+.badge-purple { background:rgba(168,85,247,0.15); color:var(--purple); }
+.signal-bar { display:flex; gap:4px; align-items:center; margin-top:8px; }
+.signal-segment { height:6px; border-radius:3px; }
+.alpha-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-top:12px; }
+.alpha-item { background:var(--surface2); border-radius:6px; padding:10px; text-align:center; }
+.alpha-value { font-size:18px; font-weight:700; margin:4px 0; }
+.alpha-name { font-size:11px; color:var(--text2); } .alpha-interp { font-size:10px; margin-top:2px; }
+.gate-check { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); }
+.gate-icon { font-size:16px; }
+.protected-list { display:flex; flex-wrap:wrap; gap:8px; }
+.protected-tag { display:flex; align-items:center; gap:6px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; }
+.protected-tag .symbol { font-weight:700; color:var(--yellow); }
+.protected-tag .remove { cursor:pointer; color:var(--text2); font-size:16px; } .protected-tag .remove:hover { color:var(--red); }
+.input-row { display:flex; gap:8px; margin-top:12px; }
+input[type="text"] { background:var(--surface2); border:1px solid var(--border); color:var(--text); padding:8px 12px; border-radius:6px; font-size:13px; flex:1; }
+input[type="text"]::placeholder { color:var(--text2); }
+button.primary { background:var(--blue); color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:500; }
+button.primary:hover { opacity:0.9; }
+.score-ring { width:80px; height:80px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:800; margin:0 auto; }
+.grade-A { border:3px solid var(--green); color:var(--green); }
+.grade-B { border:3px solid var(--blue); color:var(--blue); }
+.grade-C { border:3px solid var(--yellow); color:var(--yellow); }
+.grade-D { border:3px solid var(--red); color:var(--red); }
+.loading { color:var(--text2); font-size:13px; padding:20px; text-align:center; }
+.spinner { display:inline-block; width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--blue); border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.suggest-card { background:var(--surface2); border-radius:8px; padding:14px; margin-bottom:10px; border-left:3px solid; }
+.suggest-card.warning { border-left-color:var(--yellow); } .suggest-card.success { border-left-color:var(--green); }
+.suggest-card.danger { border-left-color:var(--red); } .suggest-card.info { border-left-color:var(--blue); }
+.suggest-title { font-size:13px; font-weight:600; margin-bottom:4px; }
+.suggest-desc { font-size:12px; color:var(--text2); margin-bottom:8px; }
+.suggest-evidence { font-size:11px; color:var(--text2); font-style:italic; margin-bottom:8px; }
+.suggest-params { display:flex; align-items:center; gap:12px; font-size:12px; }
+.suggest-params .current { color:var(--text2); text-decoration:line-through; }
+.suggest-params .arrow { color:var(--text2); } .suggest-params .suggested { color:var(--green); font-weight:700; }
+.suggest-apply { background:var(--green); color:#000; border:none; padding:4px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600; }
+.suggest-apply:hover { opacity:.85; }
+.suggest-applied { background:var(--surface); color:var(--text2); border:1px solid var(--border); padding:4px 12px; border-radius:4px; font-size:11px; }
+.stats-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px; }
+.stat-mini { background:var(--surface2); border-radius:6px; padding:10px; text-align:center; }
+.stat-mini-value { font-size:18px; font-weight:700; } .stat-mini-label { font-size:10px; color:var(--text2); margin-top:2px; }
+.pattern-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); font-size:12px; }
+.pattern-label { width:60px; font-weight:600; } .pattern-bar { height:16px; border-radius:3px; min-width:2px; }
+.pattern-value { color:var(--text2); font-size:11px; }
+.pipeline { display:flex; gap:0; align-items:stretch; overflow-x:auto; padding:8px 0; }
+.pipe-stage { flex:1; min-width:120px; position:relative; text-align:center; padding:12px 8px; }
+.pipe-stage::after { content:''; position:absolute; top:50%; right:-12px; width:24px; height:2px; background:var(--border); z-index:1; }
+.pipe-stage:last-child::after { display:none; }
+.pipe-icon { width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 8px; font-size:18px; border:2px solid var(--border); }
+.pipe-icon.pass { border-color:var(--green); background:rgba(34,197,94,0.1); }
+.pipe-icon.fail { border-color:var(--red); background:rgba(239,68,68,0.1); }
+.pipe-icon.wait { border-color:var(--text2); background:var(--surface2); opacity:.5; }
+.pipe-icon.active { border-color:var(--blue); background:rgba(59,130,246,0.15); animation:pulse 1.5s infinite; }
+@keyframes pulse { 0%,100% { box-shadow:0 0 0 0 rgba(59,130,246,.3); } 50% { box-shadow:0 0 0 8px rgba(59,130,246,0); } }
+.pipe-label { font-size:11px; color:var(--text2); margin-bottom:4px; }
+.pipe-value { font-size:12px; font-weight:600; }
+.pipe-detail { margin-top:16px; }
+.pipe-signals { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.pipe-signal-card { background:var(--surface2); border-radius:8px; padding:10px 14px; min-width:180px; flex:1; }
+.pipe-signal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.decision-box { text-align:center; margin-top:16px; padding:16px; border-radius:10px; border:2px solid; }
+.decision-box.BUY { border-color:var(--green); background:rgba(34,197,94,.08); }
+.decision-box.SELL { border-color:var(--red); background:rgba(239,68,68,.08); }
+.decision-box.HOLD { border-color:var(--text2); background:var(--surface2); }
+.decision-box.BLOCKED { border-color:var(--yellow); background:rgba(234,179,8,.08); }
+.decision-label { font-size:24px; font-weight:800; }
+.maint-banner { display:none; background:linear-gradient(135deg,#92400e,#b45309); border-bottom:2px solid #f59e0b; padding:14px 24px; text-align:center; }
+.maint-banner.active { display:block; }
+.maint-icon { font-size:18px; margin-right:8px; } .maint-text { font-size:14px; font-weight:600; color:#fef3c7; }
+.maint-time { font-size:12px; color:#fde68a; margin-top:4px; }
+.maint-countdown { font-size:13px; color:#fff; font-weight:700; margin-left:8px; }
+@media (max-width:768px) { .container { grid-template-columns:1fr; } .summary-grid { grid-template-columns:repeat(2,1fr); } .alpha-grid { grid-template-columns:repeat(3,1fr); } .tab { padding:10px 12px; font-size:12px; } }
 </style>
 </head>
 <body>
 
 <div class="maint-banner" id="maintBanner">
-  <div>
-    <span class="maint-icon">&#9888;</span>
-    <span class="maint-text" id="maintMessage">토스증권 시스템 점검 중</span>
-    <span class="maint-countdown" id="maintCountdown"></span>
-  </div>
+  <div><span class="maint-icon">&#9888;</span><span class="maint-text" id="maintMessage">토스증권 시스템 점검 중</span><span class="maint-countdown" id="maintCountdown"></span></div>
   <div class="maint-time" id="maintTime"></div>
 </div>
 
@@ -191,38 +136,38 @@ button.primary:hover { opacity: 0.9; }
   </div>
 </div>
 
+<div class="tab-bar">
+  <div class="tab active" onclick="switchTab('dashboard')">대시보드</div>
+  <div class="tab" onclick="switchTab('screener')">스크리너</div>
+  <div class="tab" onclick="switchTab('risk')">리스크</div>
+  <div class="tab" onclick="switchTab('journal')">기록</div>
+</div>
+
+<!-- ==================== TAB 1: 대시보드 ==================== -->
+<div class="tab-page active" id="page-dashboard">
 <div class="container">
-  <!-- AI Pipeline -->
   <div class="card full-width">
-    <div class="card-header">
-      <span class="card-title">AI 진입 판단 파이프라인</span>
-      <button class="card-action" onclick="loadPipeline()">분석 실행</button>
-    </div>
-    <div id="pipelinePanel">
-      <div class="loading">분석 실행을 클릭하세요</div>
-    </div>
+    <div class="card-header"><span class="card-title">AI 진입 판단 파이프라인</span><button class="card-action" onclick="loadPipeline()">분석 실행</button></div>
+    <div id="pipelinePanel"><div class="loading">분석 실행을 클릭하세요</div></div>
   </div>
-
-  <!-- Account Summary -->
   <div class="card full-width">
-    <div class="card-header">
-      <span class="card-title">계좌 요약</span>
-      <button class="card-action" onclick="loadAll()">새로고침</button>
-    </div>
-    <div class="summary-grid" id="summaryGrid">
-      <div class="summary-item"><div class="loading"><span class="spinner"></span></div></div>
-    </div>
+    <div class="card-header"><span class="card-title">계좌 요약</span><button class="card-action" onclick="loadAll()">새로고침</button></div>
+    <div class="summary-grid" id="summaryGrid"><div class="summary-item"><div class="loading"><span class="spinner"></span></div></div></div>
   </div>
-
-  <!-- Positions -->
   <div class="card">
-    <div class="card-header">
-      <span class="card-title">보유 종목</span>
-    </div>
+    <div class="card-header"><span class="card-title">보유 종목</span></div>
     <div id="positionsTable"><div class="loading"><span class="spinner"></span> 로딩 중...</div></div>
   </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">시그널 엔진</span><button class="card-action" onclick="loadSignals()">분석</button></div>
+    <div id="signalPanel"><div class="loading">보유종목 로드 후 자동 분석</div></div>
+  </div>
+</div>
+</div>
 
-  <!-- Stock Screener -->
+<!-- ==================== TAB 2: 스크리너 ==================== -->
+<div class="tab-page" id="page-screener">
+<div class="container">
   <div class="card full-width">
     <div class="card-header">
       <span class="card-title">종목 스크리너 (워치리스트 + 자동탐색 + 뉴스)</span>
@@ -243,41 +188,27 @@ button.primary:hover { opacity: 0.9; }
     </div>
     <div id="screenerResult"><div class="loading">스캔 버튼을 클릭하세요</div></div>
   </div>
-
-  <!-- Signals -->
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">시그널 엔진</span>
-      <button class="card-action" onclick="loadSignals()">분석</button>
-    </div>
-    <div id="signalPanel"><div class="loading">보유종목 로드 후 자동 분석</div></div>
-  </div>
-
-  <!-- Risk Gate -->
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">리스크 게이트</span>
-    </div>
-    <div id="riskGate"><div class="loading"><span class="spinner"></span></div></div>
-  </div>
-
-  <!-- Buy Evaluator -->
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">매수 평가 (101 Alphas)</span>
-    </div>
-    <div class="input-row">
-      <input type="text" id="evalSymbol" placeholder="종목 심볼 (예: TSLA, 005930)">
-      <button class="primary" onclick="evaluateBuy()">평가</button>
-    </div>
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">매수 평가 (101 Alphas)</span></div>
+    <div class="input-row"><input type="text" id="evalSymbol" placeholder="종목 심볼 (예: TSLA, 005930)"><button class="primary" onclick="evaluateBuy()">평가</button></div>
     <div id="evalResult" style="margin-top:16px"></div>
   </div>
+</div>
+</div>
 
-  <!-- Protected Stocks -->
+<!-- ==================== TAB 3: 리스크 ==================== -->
+<div class="tab-page" id="page-risk">
+<div class="container">
+  <div class="card">
+    <div class="card-header"><span class="card-title">리스크 게이트</span><button class="card-action" onclick="loadRiskGate()">새로고침</button></div>
+    <div id="riskGate"><div class="loading"><span class="spinner"></span></div></div>
+  </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">파라미터 조정 제안</span><button class="card-action" onclick="loadSuggestions()">제안 받기</button></div>
+    <div id="suggestPanel"><div class="loading">분석 결과 기반으로 제안을 생성합니다</div></div>
+  </div>
   <div class="card full-width">
-    <div class="card-header">
-      <span class="card-title">보호 종목 (가드레일)</span>
-    </div>
+    <div class="card-header"><span class="card-title">보호 종목 (가드레일)</span></div>
     <div class="protected-list" id="protectedList"></div>
     <div class="input-row">
       <input type="text" id="protectSymbol" placeholder="심볼 (예: AAPL)">
@@ -286,696 +217,178 @@ button.primary:hover { opacity: 0.9; }
       <button class="primary" onclick="addProtected()">추가</button>
     </div>
   </div>
+</div>
+</div>
 
-  <!-- Trade Log & Lessons -->
+<!-- ==================== TAB 4: 기록 ==================== -->
+<div class="tab-page" id="page-journal">
+<div class="container">
   <div class="card full-width">
-    <div class="card-header">
-      <span class="card-title">거래 기록 & 교훈</span>
-      <button class="card-action" onclick="loadTrades()">새로고침</button>
-    </div>
+    <div class="card-header"><span class="card-title">거래 기록 & 교훈</span><button class="card-action" onclick="loadTrades()">새로고침</button></div>
     <div id="tradeLog"><div class="loading">거래 기록 없음</div></div>
   </div>
-
-  <!-- Analysis & Suggestions -->
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">패턴 분석</span>
-      <button class="card-action" onclick="loadAnalysis()">분석 실행</button>
-    </div>
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">패턴 분석</span><button class="card-action" onclick="loadAnalysis()">분석 실행</button></div>
     <div id="analysisPanel"><div class="loading">거래 기록이 쌓이면 패턴을 분석합니다</div></div>
   </div>
-
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">파라미터 조정 제안</span>
-      <button class="card-action" onclick="loadSuggestions()">제안 받기</button>
-    </div>
-    <div id="suggestPanel"><div class="loading">분석 결과 기반으로 제안을 생성합니다</div></div>
-  </div>
+</div>
 </div>
 
 <script>
 const API = '';
-
-function fmt(n) {
-  if (n == null) return '-';
-  return Number(n).toLocaleString('ko-KR');
-}
-function pct(n) {
-  if (n == null) return '-';
-  const v = (n * 100).toFixed(2);
-  return (n >= 0 ? '+' : '') + v + '%';
-}
+function fmt(n) { return n == null ? '-' : Number(n).toLocaleString('ko-KR'); }
+function pct(n) { if (n == null) return '-'; const v = (n*100).toFixed(2); return (n>=0?'+':'')+v+'%'; }
 function pctClass(n) { return n >= 0 ? 'positive' : 'negative'; }
 
+// Tab switching
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab[onclick="switchTab('${name}')"]`).classList.add('active');
+  document.getElementById('page-' + name).classList.add('active');
+  // Load data for the tab
+  if (name === 'screener') loadWatchlist();
+  if (name === 'risk') { loadRiskGate(); loadProtected(); }
+  if (name === 'journal') loadTrades();
+}
+
 // Clock
-setInterval(() => {
-  document.getElementById('clock').textContent = new Date().toLocaleTimeString('ko-KR');
-  updateMaintCountdown();
-}, 1000);
+setInterval(() => { document.getElementById('clock').textContent = new Date().toLocaleTimeString('ko-KR'); updateMaintCountdown(); }, 1000);
 
 // Maintenance
 let maintUntil = null;
-
 async function checkMaintenance() {
   try {
-    const r = await fetch(API + '/api/maintenance');
-    const d = await r.json();
+    const r = await fetch(API+'/api/maintenance'); const d = await r.json();
     const banner = document.getElementById('maintBanner');
-    if (d.maintenance) {
-      banner.classList.add('active');
-      document.getElementById('maintMessage').textContent = d.message || '토스증권 시스템 점검 중';
-      if (d.from && d.until) {
-        document.getElementById('maintTime').textContent = `점검 시간: ${d.from} ~ ${d.until}`;
-        maintUntil = new Date(d.until.replace(' ', 'T'));
-      } else {
-        document.getElementById('maintTime').textContent = '';
-        maintUntil = null;
-      }
-    } else {
-      banner.classList.remove('active');
-      maintUntil = null;
-    }
-  } catch { }
+    if (d.maintenance) { banner.classList.add('active'); document.getElementById('maintMessage').textContent = d.message||'토스증권 시스템 점검 중'; if (d.from&&d.until) { document.getElementById('maintTime').textContent = `점검 시간: ${d.from} ~ ${d.until}`; maintUntil = new Date(d.until.replace(' ','T')); } } else { banner.classList.remove('active'); maintUntil = null; }
+  } catch {}
 }
-
-function updateMaintCountdown() {
-  const el = document.getElementById('maintCountdown');
-  if (!maintUntil) { el.textContent = ''; return; }
-  const diff = maintUntil - new Date();
-  if (diff <= 0) {
-    el.textContent = '(점검 종료 예정 - 새로고침 필요)';
-    return;
-  }
-  const min = Math.floor(diff / 60000);
-  const sec = Math.floor((diff % 60000) / 1000);
-  el.textContent = `(${min}분 ${sec}초 후 종료)`;
-}
-
-// Also detect maintenance from API errors
-function isMaintenance(data) {
-  return data && (data.maintenance || (data.error && data.error.includes('490')));
-}
+function updateMaintCountdown() { const el = document.getElementById('maintCountdown'); if (!maintUntil) { el.textContent=''; return; } const diff = maintUntil-new Date(); if (diff<=0) { el.textContent='(점검 종료 예정)'; return; } el.textContent = `(${Math.floor(diff/60000)}분 ${Math.floor((diff%60000)/1000)}초 후 종료)`; }
 
 // Auth
-async function checkAuth() {
-  try {
-    const r = await fetch(API + '/api/auth/status');
-    const d = await r.json();
-    const dot = document.getElementById('authDot');
-    const st = document.getElementById('authStatus');
-    if (d.error || d.raw?.includes('No active')) {
-      dot.className = 'status-dot off';
-      st.textContent = '세션 없음';
-    } else {
-      dot.className = 'status-dot on';
-      st.textContent = '세션 활성';
-    }
-  } catch { }
-}
+async function checkAuth() { try { const r = await fetch(API+'/api/auth/status'); const d = await r.json(); const dot = document.getElementById('authDot'); const st = document.getElementById('authStatus'); if (d.error||d.raw?.includes('No active')) { dot.className='status-dot off'; st.textContent='세션 없음'; } else { dot.className='status-dot on'; st.textContent='세션 활성'; } } catch {} }
 
 // Summary
 async function loadSummary() {
-  const r = await fetch(API + '/api/account/summary');
-  const d = await r.json();
-  if (d.maintenance) { checkMaintenance(); }
-  if (d.error) {
-    const msg = d.maintenance ? `&#9888; ${d.error}` : d.error;
-    document.getElementById('summaryGrid').innerHTML = `<div class="loading" style="${d.maintenance ? 'color:var(--yellow)' : ''}">${msg}</div>`;
-    return;
-  }
-  const us = d.markets?.us || {};
-  const kr = d.markets?.kr || {};
+  const r = await fetch(API+'/api/account/summary'); const d = await r.json();
+  if (d.maintenance) checkMaintenance();
+  if (d.error) { document.getElementById('summaryGrid').innerHTML = `<div class="loading" style="${d.maintenance?'color:var(--yellow)':''}">&#9888; ${d.error}</div>`; return; }
+  const us=d.markets?.us||{}, kr=d.markets?.kr||{};
   document.getElementById('summaryGrid').innerHTML = `
-    <div class="summary-item">
-      <div class="summary-label">총 자산</div>
-      <div class="summary-value">${fmt(d.total_asset_amount)}원</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-label">평가 수익</div>
-      <div class="summary-value ${pctClass(d.profit_rate)}">${fmt(d.evaluated_profit_amount)}원</div>
-      <div class="summary-sub ${pctClass(d.profit_rate)}">${pct(d.profit_rate)}</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-label">미국주식</div>
-      <div class="summary-value">${fmt(us.evaluated_amount)}원</div>
-      <div class="summary-sub ${pctClass(us.profit_rate)}">${pct(us.profit_rate)}</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-label">주문 가능</div>
-      <div class="summary-value">${fmt(d.orderable_amount_krw)}원</div>
-      <div class="summary-sub">USD: $${fmt(d.orderable_amount_usd)}</div>
-    </div>
-  `;
+    <div class="summary-item"><div class="summary-label">총 자산</div><div class="summary-value">${fmt(d.total_asset_amount)}원</div></div>
+    <div class="summary-item"><div class="summary-label">평가 수익</div><div class="summary-value ${pctClass(d.profit_rate)}">${fmt(d.evaluated_profit_amount)}원</div><div class="summary-sub ${pctClass(d.profit_rate)}">${pct(d.profit_rate)}</div></div>
+    <div class="summary-item"><div class="summary-label">미국주식</div><div class="summary-value">${fmt(us.evaluated_amount)}원</div><div class="summary-sub ${pctClass(us.profit_rate)}">${pct(us.profit_rate)}</div></div>
+    <div class="summary-item"><div class="summary-label">주문 가능</div><div class="summary-value">${fmt(d.orderable_amount_krw)}원</div></div>`;
 }
 
 // Positions
 async function loadPositions() {
-  const r = await fetch(API + '/api/portfolio/positions');
-  const d = await r.json();
-  if (!Array.isArray(d)) { document.getElementById('positionsTable').innerHTML = `<div class="loading">${d.error || '데이터 없음'}</div>`; return; }
+  const r = await fetch(API+'/api/portfolio/positions'); const d = await r.json();
+  if (!Array.isArray(d)) { document.getElementById('positionsTable').innerHTML=`<div class="loading">${d.error||'데이터 없음'}</div>`; return; }
   let html = `<table><tr><th>종목</th><th>수량</th><th>현재가</th><th>수익률</th><th>오늘</th></tr>`;
-  d.forEach(p => {
-    const sym = p.symbol || p.product_code;
-    const price = p.current_price_usd ? `$${p.current_price_usd}` : `${fmt(p.current_price)}원`;
-    html += `<tr>
-      <td><strong>${sym}</strong><br><span style="color:var(--text2);font-size:11px">${p.name}</span></td>
-      <td class="mono">${typeof p.quantity === 'number' ? p.quantity.toFixed(2) : p.quantity}</td>
-      <td class="mono">${price}</td>
-      <td class="${pctClass(p.profit_rate)}">${pct(p.profit_rate)}</td>
-      <td class="${pctClass(p.daily_profit_rate)}">${pct(p.daily_profit_rate)}</td>
-    </tr>`;
-  });
-  html += '</table>';
-  document.getElementById('positionsTable').innerHTML = html;
+  d.forEach(p => { const sym=p.symbol||p.product_code; const price=p.current_price_usd?`$${p.current_price_usd}`:`${fmt(p.current_price)}원`;
+    html += `<tr><td><strong>${sym}</strong><br><span style="color:var(--text2);font-size:11px">${p.name}</span></td><td class="mono">${typeof p.quantity==='number'?p.quantity.toFixed(2):p.quantity}</td><td class="mono">${price}</td><td class="${pctClass(p.profit_rate)}">${pct(p.profit_rate)}</td><td class="${pctClass(p.daily_profit_rate)}">${pct(p.daily_profit_rate)}</td></tr>`; });
+  document.getElementById('positionsTable').innerHTML = html+'</table>';
 }
 
 // Signals
 async function loadSignals() {
-  document.getElementById('signalPanel').innerHTML = '<div class="loading"><span class="spinner"></span> 분석 중...</div>';
-  const r = await fetch(API + '/api/signal/check-positions');
-  const d = await r.json();
-  if (!Array.isArray(d)) { document.getElementById('signalPanel').innerHTML = `<div class="loading">${d.error || '데이터 없음'}</div>`; return; }
-  let html = '';
-  d.forEach(s => {
-    let badge = '';
-    if (s.action === 'SELL_STOP_LOSS') badge = '<span class="badge badge-red">손절</span>';
-    else if (s.action === 'SELL_TAKE_PROFIT') badge = '<span class="badge badge-green">익절</span>';
-    else if (s.action === 'ALERT_SHARP_DROP') badge = '<span class="badge badge-red">급락</span>';
-    else badge = '<span class="badge badge-blue">보유</span>';
-    html += `<div class="gate-check">
-      ${badge}
-      <strong>${s.symbol}</strong>
-      <span style="color:var(--text2);font-size:12px">${s.reason}</span>
-      <span class="mono ${pctClass(s.profit_rate/100)}" style="margin-left:auto">${s.profit_rate > 0 ? '+' : ''}${s.profit_rate}%</span>
-    </div>`;
-  });
+  document.getElementById('signalPanel').innerHTML='<div class="loading"><span class="spinner"></span> 분석 중...</div>';
+  const r = await fetch(API+'/api/signal/check-positions'); const d = await r.json();
+  if (!Array.isArray(d)) { document.getElementById('signalPanel').innerHTML=`<div class="loading">${d.error||'데이터 없음'}</div>`; return; }
+  let html=''; d.forEach(s => { let badge='';
+    if (s.action==='SELL_STOP_LOSS') badge='<span class="badge badge-red">손절</span>'; else if (s.action==='SELL_TAKE_PROFIT') badge='<span class="badge badge-green">익절</span>'; else if (s.action==='ALERT_SHARP_DROP') badge='<span class="badge badge-red">급락</span>'; else badge='<span class="badge badge-blue">보유</span>';
+    html += `<div class="gate-check">${badge}<strong>${s.symbol}</strong><span style="color:var(--text2);font-size:12px">${s.reason}</span><span class="mono ${pctClass(s.profit_rate/100)}" style="margin-left:auto">${s.profit_rate>0?'+':''}${s.profit_rate}%</span></div>`; });
   document.getElementById('signalPanel').innerHTML = html;
 }
 
 // Risk Gate
 async function loadRiskGate() {
-  const r = await fetch(API + '/api/signal/risk-gate');
-  const d = await r.json();
-  if (d.error) { document.getElementById('riskGate').innerHTML = `<div class="loading">${d.error}</div>`; return; }
-  let html = `<div style="text-align:center;margin-bottom:12px">
-    <span class="badge ${d.passed ? 'badge-green' : 'badge-red'}" style="font-size:14px;padding:6px 16px">
-      ${d.passed ? 'GATE PASSED' : 'GATE BLOCKED'}
-    </span>
-  </div>`;
-  (d.checks || []).forEach(c => {
-    html += `<div class="gate-check">
-      <span class="gate-icon">${c.passed ? '✅' : '🚫'}</span>
-      <span style="font-size:13px">${c.description}</span>
-    </div>`;
-  });
-  if (d.blocked_reason) {
-    html += `<div style="margin-top:8px;padding:8px;background:rgba(239,68,68,0.1);border-radius:6px;font-size:12px;color:var(--red)">${d.blocked_reason}</div>`;
-  }
+  const r = await fetch(API+'/api/signal/risk-gate'); const d = await r.json();
+  if (d.error) { document.getElementById('riskGate').innerHTML=`<div class="loading">${d.error}</div>`; return; }
+  let html = `<div style="text-align:center;margin-bottom:12px"><span class="badge ${d.passed?'badge-green':'badge-red'}" style="font-size:14px;padding:6px 16px">${d.passed?'GATE PASSED':'GATE BLOCKED'}</span></div>`;
+  (d.checks||[]).forEach(c => { html += `<div class="gate-check"><span class="gate-icon">${c.passed?'✅':'🚫'}</span><span style="font-size:13px">${c.description}</span></div>`; });
+  if (d.blocked_reason) html += `<div style="margin-top:8px;padding:8px;background:rgba(239,68,68,0.1);border-radius:6px;font-size:12px;color:var(--red)">${d.blocked_reason}</div>`;
   document.getElementById('riskGate').innerHTML = html;
 }
 
 // Evaluate Buy
 async function evaluateBuy() {
-  const sym = document.getElementById('evalSymbol').value.trim();
-  if (!sym) return;
-  document.getElementById('evalResult').innerHTML = '<div class="loading"><span class="spinner"></span> 평가 중...</div>';
-  const r = await fetch(API + `/api/signal/evaluate-buy?symbol=${sym}`);
-  const d = await r.json();
-  if (d.error) { document.getElementById('evalResult').innerHTML = `<div class="loading">${d.error}</div>`; return; }
-
-  const b = d.breakdown || {};
-  let html = `
-    <div style="display:flex;gap:20px;align-items:center">
-      <div class="score-ring grade-${d.grade}">${d.grade}</div>
-      <div>
-        <div style="font-size:20px;font-weight:700">${d.symbol} <span style="color:var(--text2);font-size:14px">${d.name}</span></div>
-        <div class="mono" style="font-size:14px;margin-top:4px">${d.score}/${d.max_score}점 (${d.score_pct}%)</div>
-        <div><span class="badge badge-${d.grade === 'A' ? 'green' : d.grade === 'B' ? 'blue' : d.grade === 'C' ? 'yellow' : 'red'}">${d.recommendation}</span></div>
-      </div>
-    </div>
-    <div class="signal-bar" style="margin-top:16px">
-      <div class="signal-segment" style="width:${(b.volume?.score||0)/130*100}%;background:var(--blue)" title="거래량 ${b.volume?.score||0}/30"></div>
-      <div class="signal-segment" style="width:${(b.momentum?.score||0)/130*100}%;background:var(--green)" title="모멘텀 ${b.momentum?.score||0}/25"></div>
-      <div class="signal-segment" style="width:${(b.price_position?.score||0)/130*100}%;background:var(--yellow)" title="가격위치 ${b.price_position?.score||0}/25"></div>
-      <div class="signal-segment" style="width:${(b.portfolio_fit?.score||0)/130*100}%;background:var(--purple)" title="여력 ${b.portfolio_fit?.score||0}/20"></div>
-      <div class="signal-segment" style="width:${(b.alphas?.score||0)/130*100}%;background:var(--red)" title="알파 ${b.alphas?.score||0}/30"></div>
-    </div>
-    <div style="display:flex;gap:12px;margin-top:4px;font-size:11px;color:var(--text2)">
-      <span>거래량 ${b.volume?.score||0}/30</span>
-      <span>모멘텀 ${b.momentum?.score||0}/25</span>
-      <span>가격 ${b.price_position?.score||0}/25</span>
-      <span>여력 ${b.portfolio_fit?.score||0}/20</span>
-      <span>알파 ${b.alphas?.score||0}/30</span>
-    </div>`;
-
-  // Alphas
-  if (d.alphas) {
-    html += '<div class="alpha-grid">';
-    for (const [key, a] of Object.entries(d.alphas)) {
-      if (typeof a !== 'object' || !a.name) continue;
-      const color = a.value > 0.01 ? 'var(--green)' : a.value < -0.01 ? 'var(--red)' : 'var(--text2)';
-      html += `<div class="alpha-item">
-        <div class="alpha-name">${a.name}</div>
-        <div class="alpha-value" style="color:${color}">${a.value > 0 ? '+' : ''}${a.value}</div>
-        <div class="alpha-interp" style="color:${color}">${a.interpretation}</div>
-      </div>`;
-    }
-    html += '</div>';
-  }
+  const sym = document.getElementById('evalSymbol').value.trim(); if (!sym) return;
+  document.getElementById('evalResult').innerHTML='<div class="loading"><span class="spinner"></span> 평가 중...</div>';
+  const r = await fetch(API+`/api/signal/evaluate-buy?symbol=${sym}`); const d = await r.json();
+  if (d.error) { document.getElementById('evalResult').innerHTML=`<div class="loading">${d.error}</div>`; return; }
+  const b=d.breakdown||{}; let html = `<div style="display:flex;gap:20px;align-items:center"><div class="score-ring grade-${d.grade}">${d.grade}</div><div><div style="font-size:20px;font-weight:700">${d.symbol} <span style="color:var(--text2);font-size:14px">${d.name}</span></div><div class="mono" style="font-size:14px;margin-top:4px">${d.score}/${d.max_score}점 (${d.score_pct}%)</div><div><span class="badge badge-${d.grade==='A'?'green':d.grade==='B'?'blue':d.grade==='C'?'yellow':'red'}">${d.recommendation}</span></div></div></div>
+    <div class="signal-bar" style="margin-top:16px"><div class="signal-segment" style="width:${(b.volume?.score||0)/130*100}%;background:var(--blue)"></div><div class="signal-segment" style="width:${(b.momentum?.score||0)/130*100}%;background:var(--green)"></div><div class="signal-segment" style="width:${(b.price_position?.score||0)/130*100}%;background:var(--yellow)"></div><div class="signal-segment" style="width:${(b.portfolio_fit?.score||0)/130*100}%;background:var(--purple)"></div><div class="signal-segment" style="width:${(b.alphas?.score||0)/130*100}%;background:var(--red)"></div></div>
+    <div style="display:flex;gap:12px;margin-top:4px;font-size:11px;color:var(--text2)"><span>거래량 ${b.volume?.score||0}/30</span><span>모멘텀 ${b.momentum?.score||0}/25</span><span>가격 ${b.price_position?.score||0}/25</span><span>여력 ${b.portfolio_fit?.score||0}/20</span><span>알파 ${b.alphas?.score||0}/30</span></div>`;
+  if (d.alphas) { html += '<div class="alpha-grid">'; for (const [key,a] of Object.entries(d.alphas)) { if (typeof a!=='object'||!a.name) continue; const color=a.value>0.01?'var(--green)':a.value<-0.01?'var(--red)':'var(--text2)'; html += `<div class="alpha-item"><div class="alpha-name">${a.name}</div><div class="alpha-value" style="color:${color}">${a.value>0?'+':''}${a.value}</div><div class="alpha-interp" style="color:${color}">${a.interpretation}</div></div>`; } html += '</div>'; }
   document.getElementById('evalResult').innerHTML = html;
 }
-document.getElementById('evalSymbol').addEventListener('keydown', e => { if (e.key === 'Enter') evaluateBuy(); });
+document.getElementById('evalSymbol').addEventListener('keydown', e => { if (e.key==='Enter') evaluateBuy(); });
 
 // Protected Stocks
 async function loadProtected() {
-  const r = await fetch(API + '/api/protected-stocks');
-  const d = await r.json();
-  let html = '';
-  (d.stocks || []).forEach(s => {
-    html += `<div class="protected-tag">
-      <span class="symbol">${s.symbol}</span>
-      <span style="font-size:12px">${s.name}</span>
-      <span style="font-size:11px;color:var(--text2)">${s.reason}</span>
-      <span class="remove" onclick="removeProtected('${s.symbol}')">&times;</span>
-    </div>`;
-  });
-  if (!d.stocks?.length) html = '<span style="color:var(--text2);font-size:13px">보호 종목 없음</span>';
+  const r = await fetch(API+'/api/protected-stocks'); const d = await r.json(); let html='';
+  (d.stocks||[]).forEach(s => { html += `<div class="protected-tag"><span class="symbol">${s.symbol}</span><span style="font-size:12px">${s.name}</span><span style="font-size:11px;color:var(--text2)">${s.reason}</span><span class="remove" onclick="removeProtected('${s.symbol}')">&times;</span></div>`; });
+  if (!d.stocks?.length) html='<span style="color:var(--text2);font-size:13px">보호 종목 없음</span>';
   document.getElementById('protectedList').innerHTML = html;
 }
+async function addProtected() { const s=document.getElementById('protectSymbol').value.trim(),n=document.getElementById('protectName').value.trim(),r=document.getElementById('protectReason').value.trim(); if(!s)return; await fetch(API+'/api/protected-stocks/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:s,name:n,reason:r})}); document.getElementById('protectSymbol').value=''; document.getElementById('protectName').value=''; document.getElementById('protectReason').value=''; loadProtected(); }
+async function removeProtected(sym) { if(!confirm(`${sym} 보호를 해제하시겠습니까?`))return; await fetch(API+'/api/protected-stocks/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})}); loadProtected(); }
 
-async function addProtected() {
-  const symbol = document.getElementById('protectSymbol').value.trim();
-  const name = document.getElementById('protectName').value.trim();
-  const reason = document.getElementById('protectReason').value.trim();
-  if (!symbol) return;
-  await fetch(API + '/api/protected-stocks/add', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ symbol, name, reason })
-  });
-  document.getElementById('protectSymbol').value = '';
-  document.getElementById('protectName').value = '';
-  document.getElementById('protectReason').value = '';
-  loadProtected();
-}
-
-async function removeProtected(symbol) {
-  if (!confirm(`${symbol} 보호를 해제하시겠습니까?`)) return;
-  await fetch(API + '/api/protected-stocks/remove', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ symbol })
-  });
-  loadProtected();
-}
-
-// Load all
-// AI Pipeline
+// Pipeline
 async function loadPipeline() {
-  const panel = document.getElementById('pipelinePanel');
-  panel.innerHTML = '<div class="loading"><span class="spinner"></span> AI 분석 파이프라인 실행 중...</div>';
-
-  const r = await fetch(API + '/api/ai/pipeline');
-  const d = await r.json();
-  const p = d.phases || {};
-  const decision = d.decision || {};
-
-  // 단계 상태 결정
-  const stages = [
-    { key: 'session', icon: '🔐', label: '세션', ok: p.session?.ok },
-    { key: 'maintenance', icon: '🔧', label: '시스템', ok: p.maintenance?.ok },
-    { key: 'data', icon: '📊', label: '데이터 수집', ok: p.data?.ok },
-    { key: 'position_signals', icon: '📡', label: '포지션 시그널', ok: p.position_signals?.ok },
-    { key: 'risk_gate', icon: '🛡️', label: '리스크 게이트', ok: p.risk_gate?.ok },
-    { key: 'evaluation', icon: '🧠', label: '매수 평가', ok: p.evaluation?.ok },
-  ];
-
-  // 파이프라인 바
-  let firstFail = stages.findIndex(s => s.ok === false || s.ok === undefined);
-  if (firstFail === -1) firstFail = stages.length;
-
-  let html = '<div class="pipeline">';
-  stages.forEach((s, i) => {
-    let cls = 'wait';
-    if (i < firstFail) cls = 'pass';
-    else if (i === firstFail && s.ok === false) cls = 'fail';
-    else if (i === firstFail) cls = 'active';
-    html += `<div class="pipe-stage">
-      <div class="pipe-icon ${cls}">${s.icon}</div>
-      <div class="pipe-label">${s.label}</div>
-      <div class="pipe-value" style="color:${cls === 'pass' ? 'var(--green)' : cls === 'fail' ? 'var(--red)' : 'var(--text2)'}">
-        ${cls === 'pass' ? 'PASS' : cls === 'fail' ? 'FAIL' : cls === 'active' ? '...' : '-'}
-      </div>
-    </div>`;
-  });
-  html += '</div>';
-
-  // 포지션 시그널 상세
-  const signals = p.position_signals?.signals || [];
-  if (signals.length > 0) {
-    html += '<div class="pipe-detail"><div style="font-size:12px;color:var(--text2);margin-bottom:8px">보유종목 시그널</div><div class="pipe-signals">';
-    signals.forEach(s => {
-      let actionBadge = '';
-      if (s.action === 'SELL_STOP_LOSS') actionBadge = '<span class="badge badge-red">손절 매도</span>';
-      else if (s.action === 'SELL_TAKE_PROFIT') actionBadge = '<span class="badge badge-green">익절 매도</span>';
-      else if (s.action === 'ALERT_SHARP_DROP') actionBadge = '<span class="badge badge-red">급락 경고</span>';
-      else actionBadge = '<span class="badge badge-blue">보유 유지</span>';
-      const profitClass = s.profit_rate >= 0 ? 'positive' : 'negative';
-      html += `<div class="pipe-signal-card">
-        <div class="pipe-signal-header">
-          <strong>${s.symbol}</strong> ${actionBadge}
-        </div>
-        <div style="font-size:11px;color:var(--text2)">${s.name}</div>
-        <div class="mono ${profitClass}" style="font-size:14px;margin-top:4px">${s.profit_rate > 0 ? '+' : ''}${s.profit_rate}%</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:2px">${s.reason}</div>
-      </div>`;
-    });
-    html += '</div></div>';
-  }
-
-  // 매수 평가 결과
-  const evals = p.evaluation?.results || [];
-  if (evals.length > 0) {
-    html += '<div class="pipe-detail"><div style="font-size:12px;color:var(--text2);margin-bottom:8px">매수 평가 (보유종목 기준)</div><div class="pipe-signals">';
-    evals.forEach(e => {
-      const gradeColor = e.grade === 'A' ? 'var(--green)' : e.grade === 'B' ? 'var(--blue)' : e.grade === 'C' ? 'var(--yellow)' : 'var(--red)';
-      html += `<div class="pipe-signal-card">
-        <div class="pipe-signal-header">
-          <strong>${e.symbol}</strong>
-          <span class="badge" style="background:${gradeColor}20;color:${gradeColor}">${e.grade} ${e.recommendation}</span>
-        </div>
-        <div style="font-size:11px;color:var(--text2)">${e.name}</div>
-        <div class="mono" style="font-size:13px;margin-top:4px">${e.score}/${e.max_score} (${e.pct}%)</div>
-      </div>`;
-    });
-    html += '</div></div>';
-  }
-
-  // 최종 판단
-  const act = decision.action || 'HOLD';
-  const actLabel = act === 'BUY' ? '매수 진입 가능' : act === 'SELL' ? '매도 시그널 감지' : act === 'HOLD' ? '관망 (시그널 없음)' : '차단됨 (세션/점검)';
-  const actIcon = act === 'BUY' ? '🟢' : act === 'SELL' ? '🔴' : act === 'HOLD' ? '⚪' : '🟡';
-  html += `<div class="decision-box ${act}">
-    <div style="font-size:14px;color:var(--text2);margin-bottom:4px">AI 최종 판단</div>
-    <div class="decision-label">${actIcon} ${actLabel}</div>
-    <div style="font-size:12px;color:var(--text2);margin-top:8px">
-      게이트: ${decision.gate_passed ? '✅ 통과' : '🚫 차단'} &nbsp;|&nbsp;
-      매도 시그널: ${decision.sell_signals ? '🔴 있음' : '없음'} &nbsp;|&nbsp;
-      매수 후보: ${decision.buy_candidates ? '🟢 있음' : '없음'}
-    </div>
-    <div style="font-size:11px;color:var(--text2);margin-top:4px">${d.timestamp || ''}</div>
-  </div>`;
-
+  const panel = document.getElementById('pipelinePanel'); panel.innerHTML='<div class="loading"><span class="spinner"></span> AI 분석 파이프라인 실행 중...</div>';
+  const r = await fetch(API+'/api/ai/pipeline'); const d = await r.json(); const p=d.phases||{}, decision=d.decision||{};
+  const stages = [{key:'session',icon:'🔐',label:'세션',ok:p.session?.ok},{key:'maintenance',icon:'🔧',label:'시스템',ok:p.maintenance?.ok},{key:'data',icon:'📊',label:'데이터',ok:p.data?.ok},{key:'position_signals',icon:'📡',label:'시그널',ok:p.position_signals?.ok},{key:'risk_gate',icon:'🛡️',label:'게이트',ok:p.risk_gate?.ok},{key:'evaluation',icon:'🧠',label:'평가',ok:p.evaluation?.ok}];
+  let firstFail = stages.findIndex(s=>s.ok===false||s.ok===undefined); if(firstFail===-1) firstFail=stages.length;
+  let html='<div class="pipeline">'; stages.forEach((s,i)=>{ let cls='wait'; if(i<firstFail) cls='pass'; else if(i===firstFail&&s.ok===false) cls='fail'; else if(i===firstFail) cls='active';
+    html+=`<div class="pipe-stage"><div class="pipe-icon ${cls}">${s.icon}</div><div class="pipe-label">${s.label}</div><div class="pipe-value" style="color:${cls==='pass'?'var(--green)':cls==='fail'?'var(--red)':'var(--text2)'}">${cls==='pass'?'PASS':cls==='fail'?'FAIL':cls==='active'?'...':'-'}</div></div>`; }); html+='</div>';
+  const signals=p.position_signals?.signals||[]; if(signals.length>0) { html+='<div class="pipe-detail"><div style="font-size:12px;color:var(--text2);margin-bottom:8px">보유종목 시그널</div><div class="pipe-signals">';
+    signals.forEach(s=>{ let ab=''; if(s.action==='SELL_STOP_LOSS') ab='<span class="badge badge-red">손절</span>'; else if(s.action==='SELL_TAKE_PROFIT') ab='<span class="badge badge-green">익절</span>'; else if(s.action==='ALERT_SHARP_DROP') ab='<span class="badge badge-red">급락</span>'; else ab='<span class="badge badge-blue">보유</span>';
+      html+=`<div class="pipe-signal-card"><div class="pipe-signal-header"><strong>${s.symbol}</strong> ${ab}</div><div style="font-size:11px;color:var(--text2)">${s.name}</div><div class="mono ${pctClass(s.profit_rate/100)}" style="font-size:14px;margin-top:4px">${s.profit_rate>0?'+':''}${s.profit_rate}%</div></div>`; }); html+='</div></div>'; }
+  const act=decision.action||'HOLD'; const actLabel=act==='BUY'?'매수 진입 가능':act==='SELL'?'매도 시그널 감지':act==='HOLD'?'관망 (시그널 없음)':'차단됨'; const actIcon=act==='BUY'?'🟢':act==='SELL'?'🔴':act==='HOLD'?'⚪':'🟡';
+  html+=`<div class="decision-box ${act}"><div style="font-size:14px;color:var(--text2);margin-bottom:4px">AI 최종 판단</div><div class="decision-label">${actIcon} ${actLabel}</div><div style="font-size:12px;color:var(--text2);margin-top:8px">게이트: ${decision.gate_passed?'✅ 통과':'🚫 차단'} | 매도: ${decision.sell_signals?'🔴 있음':'없음'} | 매수: ${decision.buy_candidates?'🟢 있음':'없음'}</div></div>`;
   panel.innerHTML = html;
 }
 
 // Screener
-async function loadWatchlist() {
-  const r = await fetch(API + '/api/screener/watchlist');
-  const d = await r.json();
-  const panel = document.getElementById('watchlistTags');
-  if (!Array.isArray(d) || d.length === 0) {
-    panel.innerHTML = '<span style="color:var(--text2);font-size:12px">워치리스트 비어있음 - 종목을 추가하세요</span>';
-    return;
-  }
-  panel.innerHTML = d.map(s =>
-    `<div class="protected-tag" style="border-color:var(--blue)">
-      <span style="font-weight:700;color:var(--blue)">${s.symbol}</span>
-      <span style="font-size:11px">${s.name || ''}</span>
-      <span style="font-size:10px;color:var(--text2)">${s.market}</span>
-      <span class="remove" onclick="removeFromWatchlist('${s.symbol}')">&times;</span>
-    </div>`
-  ).join('');
-}
+async function loadWatchlist() { const r=await fetch(API+'/api/screener/watchlist'); const d=await r.json(); const panel=document.getElementById('watchlistTags'); if(!Array.isArray(d)||d.length===0){panel.innerHTML='<span style="color:var(--text2);font-size:12px">워치리스트 비어있음</span>';return;} panel.innerHTML=d.map(s=>`<div class="protected-tag" style="border-color:var(--blue)"><span style="font-weight:700;color:var(--blue)">${s.symbol}</span><span style="font-size:11px">${s.name||''}</span><span class="remove" onclick="removeFromWatchlist('${s.symbol}')">&times;</span></div>`).join(''); }
+async function addToWatchlist() { const s=document.getElementById('wlSymbol').value.trim(),n=document.getElementById('wlName').value.trim(); if(!s)return; const m=s.match(/^\d{6}$/)?'kr':'us'; await fetch(API+'/api/screener/watchlist-add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:s,name:n,market:m})}); document.getElementById('wlSymbol').value=''; document.getElementById('wlName').value=''; loadWatchlist(); }
+async function removeFromWatchlist(sym) { await fetch(API+'/api/screener/watchlist-remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})}); loadWatchlist(); }
+async function runScreener(source) { const panel=document.getElementById('screenerResult'); panel.innerHTML=`<div class="loading"><span class="spinner"></span> ${source==='auto'?'자동 탐색 중 (최대 30초)...':'스크리닝 중...'}</div>`; const r=await fetch(API+`/api/screener/scan?source=${source}&market=us`); renderScreenerResult(await r.json()); }
+async function runScreenerWithNews() { const syms=document.getElementById('newsSymbols').value.trim(); if(!syms)return; document.getElementById('screenerResult').innerHTML='<div class="loading"><span class="spinner"></span></div>'; const r=await fetch(API+`/api/screener/scan?source=watchlist&news-symbols=${syms}`); document.getElementById('newsSymbols').value=''; renderScreenerResult(await r.json()); }
+function renderScreenerResult(d) { const panel=document.getElementById('screenerResult'); if(d.error){panel.innerHTML=`<div class="loading">${d.error}</div>`;return;}
+  let html=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">소스: ${(d.sources||[]).join(' + ')} | 스캔: ${d.total_scanned} | <span class="positive">매수 ${d.summary?.buy||0}</span> / 관망 ${d.summary?.watch||0} / <span class="negative">스킵 ${d.summary?.skip||0}</span></div>`;
+  (d.buy_candidates||[]).forEach(e=>{ const gc=e.grade==='A'?'var(--green)':'var(--blue)'; const src=e._source==='watchlist'?'📋':e._source==='auto'?'🔍':'📰'; html+=`<div class="pipe-signal-card" style="border-left:3px solid ${gc};margin-bottom:8px"><div class="pipe-signal-header"><strong>${e.symbol}</strong><span class="badge" style="background:${gc}20;color:${gc}">${e.grade} ${e.recommendation}</span></div><div style="font-size:11px;color:var(--text2)">${src} ${e.name||''}</div><div class="mono" style="margin-top:4px">${e.score}/${e.max_score} (${e.score_pct}%) | ${e.change_rate>0?'+':''}${e.change_rate}%${e._vol_spike?' | vol x'+e._vol_spike:''}</div></div>`; });
+  if((d.watch_list||[]).length>0){html+='<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">'; d.watch_list.forEach(e=>{html+=`<span class="badge badge-yellow">${e.symbol} ${e.score_pct}%</span>`;}); html+='</div>';} panel.innerHTML=html||'<div class="loading">결과 없음</div>'; }
 
-async function addToWatchlist() {
-  const symbol = document.getElementById('wlSymbol').value.trim();
-  const name = document.getElementById('wlName').value.trim();
-  if (!symbol) return;
-  const market = symbol.match(/^\d{6}$/) ? 'kr' : 'us';
-  await fetch(API + '/api/screener/watchlist-add', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ symbol, name, market })
-  });
-  document.getElementById('wlSymbol').value = '';
-  document.getElementById('wlName').value = '';
-  loadWatchlist();
-}
-
-async function removeFromWatchlist(symbol) {
-  await fetch(API + '/api/screener/watchlist-remove', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ symbol })
-  });
-  loadWatchlist();
-}
-
-async function runScreener(source) {
-  const panel = document.getElementById('screenerResult');
-  panel.innerHTML = `<div class="loading"><span class="spinner"></span> ${source === 'auto' ? '자동 탐색 중 (최대 30초)...' : '스크리닝 중...'}</div>`;
-  const r = await fetch(API + `/api/screener/scan?source=${source}&market=us`);
-  const d = await r.json();
-  renderScreenerResult(d);
-}
-
-async function runScreenerWithNews() {
-  const symbols = document.getElementById('newsSymbols').value.trim();
-  if (!symbols) return;
-  const panel = document.getElementById('screenerResult');
-  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 뉴스 종목 평가 중...</div>';
-  const r = await fetch(API + `/api/screener/scan?source=watchlist&news-symbols=${symbols}`);
-  const d = await r.json();
-  document.getElementById('newsSymbols').value = '';
-  renderScreenerResult(d);
-}
-
-function renderScreenerResult(d) {
-  const panel = document.getElementById('screenerResult');
-  if (d.error) { panel.innerHTML = `<div class="loading">${d.error}</div>`; return; }
-
-  let html = `<div style="font-size:12px;color:var(--text2);margin-bottom:8px">
-    소스: ${(d.sources||[]).join(' + ')} | 스캔: ${d.total_scanned}개 | 채점: ${d.total_scored}개 |
-    <span class="positive">매수 후보 ${d.summary?.buy||0}</span> /
-    관망 ${d.summary?.watch||0} /
-    <span class="negative">스킵 ${d.summary?.skip||0}</span>
-  </div>`;
-
-  // 매수 후보 (A/B)
-  const buys = d.buy_candidates || [];
-  if (buys.length > 0) {
-    html += '<div style="font-size:13px;font-weight:600;margin:8px 0 6px;color:var(--green)">매수 후보</div>';
-    html += '<div class="pipe-signals">';
-    buys.forEach(e => {
-      const gradeColor = e.grade === 'A' ? 'var(--green)' : 'var(--blue)';
-      const src = e._source === 'watchlist' ? '📋' : e._source === 'auto' ? '🔍' : '📰';
-      html += `<div class="pipe-signal-card" style="border-left:3px solid ${gradeColor}">
-        <div class="pipe-signal-header">
-          <strong>${e.symbol}</strong>
-          <span class="badge" style="background:${gradeColor}20;color:${gradeColor}">${e.grade} ${e.recommendation}</span>
-        </div>
-        <div style="font-size:11px;color:var(--text2)">${src} ${e.name || ''}</div>
-        <div class="mono" style="font-size:13px;margin-top:4px">${e.score}/${e.max_score} (${e.score_pct}%)</div>
-        <div style="font-size:11px;margin-top:2px;color:var(--text2)">
-          ${e.change_rate > 0 ? '+' : ''}${e.change_rate}%
-          ${e._vol_spike ? ` | 거래량 x${e._vol_spike}` : ''}
-          ${e._gap_pct ? ` | 갭 ${e._gap_pct > 0 ? '+' : ''}${e._gap_pct}%` : ''}
-        </div>
-      </div>`;
-    });
-    html += '</div>';
-  }
-
-  // 관망 (C)
-  const watches = d.watch_list || [];
-  if (watches.length > 0) {
-    html += '<div style="font-size:13px;font-weight:600;margin:12px 0 6px;color:var(--yellow)">관망</div>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
-    watches.forEach(e => {
-      html += `<span class="badge badge-yellow">${e.symbol} ${e.score_pct}%</span>`;
-    });
-    html += '</div>';
-  }
-
-  // 스킵 (D)
-  const skips = d.skip_list || [];
-  if (skips.length > 0) {
-    html += '<div style="font-size:13px;font-weight:600;margin:12px 0 6px;color:var(--text2)">스킵</div>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
-    skips.forEach(e => {
-      html += `<span class="badge" style="background:var(--surface2);color:var(--text2)">${e.symbol} ${e.score_pct}%</span>`;
-    });
-    html += '</div>';
-  }
-
-  if (!buys.length && !watches.length && !skips.length) {
-    html += '<div class="loading">스크리닝 결과 없음</div>';
-  }
-
-  panel.innerHTML = html;
-}
-
-// Trade Log
-async function loadTrades() {
-  const r = await fetch(API + '/api/trades?status=all');
-  const d = await r.json();
-  const panel = document.getElementById('tradeLog');
-  if (!Array.isArray(d) || d.length === 0) {
-    panel.innerHTML = '<div class="loading">거래 기록 없음. 거래 실행 시 자동 기록됩니다.</div>';
-    return;
-  }
-  let html = `<table><tr><th>ID</th><th>종목</th><th>방향</th><th>진입가</th><th>청산가</th><th>수익률</th><th>사유</th><th>교훈</th><th>상태</th></tr>`;
-  d.slice(-15).reverse().forEach(t => {
-    const pnlClass = (t.pnl_pct || 0) >= 0 ? 'positive' : 'negative';
-    const pnl = t.pnl_pct != null ? `${t.pnl_pct > 0 ? '+' : ''}${t.pnl_pct}%` : '-';
-    const statusBadge = t.status === 'open' ? '<span class="badge badge-blue">보유중</span>' : '<span class="badge badge-purple">청산</span>';
-    const lesson = t.lesson ? `<span title="${t.lesson}">${t.lesson.slice(0,15)}${t.lesson.length > 15 ? '...' : ''}</span>` : '<span style="color:var(--text2)">-</span>';
-    html += `<tr>
-      <td class="mono">${t.id}</td>
-      <td><strong>${t.symbol}</strong></td>
-      <td>${t.side === 'buy' ? '매수' : '매도'}</td>
-      <td class="mono">${t.entry_price}</td>
-      <td class="mono">${t.exit_price || '-'}</td>
-      <td class="${pnlClass} mono">${pnl}</td>
-      <td style="font-size:11px">${t.exit_reason || '-'}</td>
-      <td style="font-size:11px">${lesson}</td>
-      <td>${statusBadge}</td>
-    </tr>`;
-  });
-  html += '</table>';
-  panel.innerHTML = html;
-}
+// Trades
+async function loadTrades() { const r=await fetch(API+'/api/trades?status=all'); const d=await r.json(); const panel=document.getElementById('tradeLog'); if(!Array.isArray(d)||d.length===0){panel.innerHTML='<div class="loading">거래 기록 없음</div>';return;}
+  let html=`<table><tr><th>종목</th><th>방향</th><th>진입가</th><th>청산가</th><th>수익률</th><th>사유</th><th>교훈</th><th>상태</th></tr>`;
+  d.slice(-15).reverse().forEach(t=>{ const pc=(t.pnl_pct||0)>=0?'positive':'negative'; const pnl=t.pnl_pct!=null?`${t.pnl_pct>0?'+':''}${t.pnl_pct}%`:'-'; const sb=t.status==='open'?'<span class="badge badge-blue">보유</span>':'<span class="badge badge-purple">청산</span>'; const lesson=t.lesson?`<span title="${t.lesson}">${t.lesson.slice(0,15)}...</span>`:'-';
+    html+=`<tr><td><strong>${t.symbol}</strong></td><td>${t.side==='buy'?'매수':'매도'}</td><td class="mono">${t.entry_price}</td><td class="mono">${t.exit_price||'-'}</td><td class="${pc} mono">${pnl}</td><td style="font-size:11px">${t.exit_reason||'-'}</td><td style="font-size:11px">${lesson}</td><td>${sb}</td></tr>`; }); panel.innerHTML=html+'</table>'; }
 
 // Analysis
-async function loadAnalysis() {
-  const panel = document.getElementById('analysisPanel');
-  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 분석 중...</div>';
-  const r = await fetch(API + '/api/trades/analyze');
-  const d = await r.json();
-  const s = d.stats || {};
-  const p = d.patterns || {};
-
-  if (!s.closed_trades) {
-    panel.innerHTML = `<div class="loading">${d.message || '청산 거래가 필요합니다'}</div>`;
-    return;
-  }
-
-  let html = '<div class="stats-grid">';
-  html += `<div class="stat-mini"><div class="stat-mini-value">${s.win_rate}%</div><div class="stat-mini-label">승률</div></div>`;
-  html += `<div class="stat-mini"><div class="stat-mini-value ${s.avg_pnl >= 0 ? 'positive' : 'negative'}">${s.avg_pnl > 0 ? '+' : ''}${s.avg_pnl}%</div><div class="stat-mini-label">평균 수익</div></div>`;
-  html += `<div class="stat-mini"><div class="stat-mini-value">${s.sharpe}</div><div class="stat-mini-label">샤프</div></div>`;
-  html += `<div class="stat-mini"><div class="stat-mini-value">${s.profit_factor}</div><div class="stat-mini-label">수익 팩터</div></div>`;
-  html += `<div class="stat-mini"><div class="stat-mini-value">${s.max_consecutive_losses || 0}</div><div class="stat-mini-label">연속 손실</div></div>`;
-  html += `<div class="stat-mini"><div class="stat-mini-value">${s.avg_holding_days}일</div><div class="stat-mini-label">평균 보유</div></div>`;
-  html += '</div>';
-
-  // 등급별 성과
-  const grades = p.by_grade || {};
-  if (Object.keys(grades).length > 0) {
-    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">등급별 성과</div>';
-    for (const [g, data] of Object.entries(grades)) {
-      const barW = Math.max(2, Math.min(100, Math.abs(data.avg_pnl) * 10));
-      const barColor = data.avg_pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      html += `<div class="pattern-row">
-        <span class="pattern-label">${g}등급</span>
-        <div class="pattern-bar" style="width:${barW}%;background:${barColor}"></div>
-        <span class="pattern-value">${data.count}건 | 승률 ${data.win_rate}% | 평균 ${data.avg_pnl > 0 ? '+' : ''}${data.avg_pnl}%</span>
-      </div>`;
-    }
-  }
-
-  // 교훈 목록
-  const lessons = d.lessons || [];
-  if (lessons.length > 0) {
-    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">교훈 (점수순)</div>';
-    lessons.slice(0, 5).forEach(l => {
-      const stars = '★'.repeat(Math.min(l.score, 10)) + '☆'.repeat(Math.max(0, 10 - l.score));
-      html += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
-        <strong>${l.symbol}</strong> <span class="${l.pnl >= 0 ? 'positive' : 'negative'}">${l.pnl > 0 ? '+' : ''}${l.pnl}%</span>
-        <span style="color:var(--yellow);font-size:10px;margin-left:4px">${stars}</span>
-        <div style="color:var(--text2);margin-top:2px">${l.lesson}</div>
-      </div>`;
-    });
-  }
-
-  panel.innerHTML = html;
-}
+async function loadAnalysis() { const panel=document.getElementById('analysisPanel'); panel.innerHTML='<div class="loading"><span class="spinner"></span></div>'; const r=await fetch(API+'/api/trades/analyze'); const d=await r.json(); const s=d.stats||{}, p=d.patterns||{};
+  if(!s.closed_trades){panel.innerHTML=`<div class="loading">${d.message||'청산 거래 필요'}</div>`;return;}
+  let html='<div class="stats-grid">'; html+=`<div class="stat-mini"><div class="stat-mini-value">${s.win_rate}%</div><div class="stat-mini-label">승률</div></div><div class="stat-mini"><div class="stat-mini-value ${s.avg_pnl>=0?'positive':'negative'}">${s.avg_pnl>0?'+':''}${s.avg_pnl}%</div><div class="stat-mini-label">평균 수익</div></div><div class="stat-mini"><div class="stat-mini-value">${s.sharpe}</div><div class="stat-mini-label">샤프</div></div><div class="stat-mini"><div class="stat-mini-value">${s.profit_factor}</div><div class="stat-mini-label">수익 팩터</div></div><div class="stat-mini"><div class="stat-mini-value">${s.max_consecutive_losses||0}</div><div class="stat-mini-label">연속 손실</div></div><div class="stat-mini"><div class="stat-mini-value">${s.avg_holding_days}일</div><div class="stat-mini-label">평균 보유</div></div></div>`;
+  const grades=p.by_grade||{}; if(Object.keys(grades).length>0){ html+='<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">등급별 성과</div>'; for(const[g,data] of Object.entries(grades)){ const bw=Math.max(2,Math.min(100,Math.abs(data.avg_pnl)*10)); const bc=data.avg_pnl>=0?'var(--green)':'var(--red)'; html+=`<div class="pattern-row"><span class="pattern-label">${g}등급</span><div class="pattern-bar" style="width:${bw}%;background:${bc}"></div><span class="pattern-value">${data.count}건 | 승률 ${data.win_rate}% | ${data.avg_pnl>0?'+':''}${data.avg_pnl}%</span></div>`; } }
+  const lessons=d.lessons||[]; if(lessons.length>0){ html+='<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">교훈</div>'; lessons.slice(0,5).forEach(l=>{ html+=`<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><strong>${l.symbol}</strong> <span class="${l.pnl>=0?'positive':'negative'}">${l.pnl>0?'+':''}${l.pnl}%</span> <span style="color:var(--yellow);font-size:10px">${'★'.repeat(Math.min(l.score,10))}</span><div style="color:var(--text2);margin-top:2px">${l.lesson}</div></div>`; }); }
+  panel.innerHTML=html; }
 
 // Suggestions
-async function loadSuggestions() {
-  const panel = document.getElementById('suggestPanel');
-  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 제안 생성 중...</div>';
-  const r = await fetch(API + '/api/trades/suggest');
-  const d = await r.json();
-  const suggestions = d.suggestions || [];
+async function loadSuggestions() { const panel=document.getElementById('suggestPanel'); panel.innerHTML='<div class="loading"><span class="spinner"></span></div>'; const r=await fetch(API+'/api/trades/suggest'); const d=await r.json(); const suggestions=d.suggestions||[];
+  if(!suggestions.length){panel.innerHTML='<div class="loading">제안 없음</div>';return;} let html='';
+  suggestions.forEach(s=>{ html+=`<div class="suggest-card ${s.type}" id="suggest-${s.id}"><div class="suggest-title">${s.title}</div><div class="suggest-desc">${s.description}</div>`; if(s.evidence) html+=`<div class="suggest-evidence">${s.evidence}</div>`;
+    if(s.param&&s.suggested!==null){ const curr=Array.isArray(s.current)?s.current.join(', '):s.current; const sugg=Array.isArray(s.suggested)?s.suggested.join(', '):s.suggested; html+=`<div class="suggest-params"><span>${s.param}:</span><span class="current">${curr}</span><span class="arrow">→</span><span class="suggested">${sugg}</span><button class="suggest-apply" onclick="applySuggestion('${s.id}')">반영</button></div>`; } html+='</div>'; });
+  const cr=await fetch(API+'/api/trades/config'); const config=await cr.json(); html+='<div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:8px"><div style="font-size:11px;color:var(--text2);margin-bottom:6px">현재 파라미터</div><div style="font-size:12px;font-family:monospace">'; for(const[k,v] of Object.entries(config)) html+=`${k}: <strong>${Array.isArray(v)?v.join(', '):v}</strong><br>`; html+='</div></div>'; panel.innerHTML=html; }
+async function applySuggestion(id) { const r=await fetch(API+'/api/trades/apply-suggestion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}); const d=await r.json(); if(d.applied) loadSuggestions(); }
 
-  if (!suggestions.length) {
-    panel.innerHTML = '<div class="loading">제안 없음</div>';
-    return;
-  }
-
-  let html = '';
-  suggestions.forEach(s => {
-    html += `<div class="suggest-card ${s.type}" id="suggest-${s.id}">
-      <div class="suggest-title">${s.title}</div>
-      <div class="suggest-desc">${s.description}</div>`;
-    if (s.evidence) {
-      html += `<div class="suggest-evidence">${s.evidence}</div>`;
-    }
-    if (s.param && s.suggested !== null) {
-      const curr = Array.isArray(s.current) ? s.current.join(', ') : s.current;
-      const sugg = Array.isArray(s.suggested) ? s.suggested.join(', ') : s.suggested;
-      html += `<div class="suggest-params">
-        <span>${s.param}:</span>
-        <span class="current">${curr}</span>
-        <span class="arrow">→</span>
-        <span class="suggested">${sugg}</span>
-        <button class="suggest-apply" onclick="applySuggestion('${s.id}')">반영</button>
-      </div>`;
-    }
-    html += '</div>';
-  });
-
-  // 현재 파라미터 표시
-  const cr = await fetch(API + '/api/trades/config');
-  const config = await cr.json();
-  html += '<div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:8px">';
-  html += '<div style="font-size:11px;color:var(--text2);margin-bottom:6px">현재 파라미터</div>';
-  html += '<div style="font-size:12px;font-family:monospace">';
-  for (const [k, v] of Object.entries(config)) {
-    html += `${k}: <strong>${Array.isArray(v) ? v.join(', ') : v}</strong><br>`;
-  }
-  html += '</div></div>';
-
-  panel.innerHTML = html;
-}
-
-async function applySuggestion(id) {
-  const r = await fetch(API + '/api/trades/apply-suggestion', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ id })
-  });
-  const d = await r.json();
-  if (d.applied) {
-    const card = document.getElementById('suggest-' + id);
-    const btn = card?.querySelector('.suggest-apply');
-    if (btn) { btn.textContent = '반영됨'; btn.className = 'suggest-applied'; btn.disabled = true; }
-    loadSuggestions();
-  }
-}
-
-async function loadAll() {
-  checkMaintenance();
-  checkAuth();
-  loadSummary();
-  loadPositions();
-  loadWatchlist();
-  loadRiskGate();
-  loadProtected();
-  loadTrades();
-  setTimeout(loadSignals, 500);
-}
-
+// Load all (dashboard tab)
+async function loadAll() { checkMaintenance(); checkAuth(); loadSummary(); loadPositions(); setTimeout(loadSignals, 500); }
 loadAll();
-// Auto refresh every 60s
 setInterval(loadAll, 60000);
 </script>
 </body>
