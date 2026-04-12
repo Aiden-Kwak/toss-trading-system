@@ -399,13 +399,106 @@ async function loadPipeline() {
   const stages = [{key:'session',icon:'🔐',label:'세션',ok:p.session?.ok},{key:'maintenance',icon:'🔧',label:'시스템',ok:p.maintenance?.ok},{key:'data',icon:'📊',label:'데이터',ok:p.data?.ok},{key:'position_signals',icon:'📡',label:'시그널',ok:p.position_signals?.ok},{key:'risk_gate',icon:'🛡️',label:'게이트',ok:p.risk_gate?.ok},{key:'evaluation',icon:'🧠',label:'평가',ok:p.evaluation?.ok}];
   let firstFail = stages.findIndex(s=>s.ok===false||s.ok===undefined); if(firstFail===-1) firstFail=stages.length;
   let html='<div class="pipeline">'; stages.forEach((s,i)=>{ let cls='wait'; if(i<firstFail) cls='pass'; else if(i===firstFail&&s.ok===false) cls='fail'; else if(i===firstFail) cls='active';
-    html+=`<div class="pipe-stage"><div class="pipe-icon ${cls}">${s.icon}</div><div class="pipe-label">${s.label}</div><div class="pipe-value" style="color:${cls==='pass'?'var(--green)':cls==='fail'?'var(--red)':'var(--text2)'}">${cls==='pass'?'PASS':cls==='fail'?'FAIL':cls==='active'?'...':'-'}</div></div>`; }); html+='</div>';
-  const signals=p.position_signals?.signals||[]; if(signals.length>0) { html+='<div class="pipe-detail"><div style="font-size:12px;color:var(--text2);margin-bottom:8px">보유종목 시그널</div><div class="pipe-signals">';
-    signals.forEach(s=>{ let ab=''; if(s.action==='SELL_STOP_LOSS') ab='<span class="badge badge-red">손절</span>'; else if(s.action==='SELL_TAKE_PROFIT') ab='<span class="badge badge-green">익절</span>'; else if(s.action==='ALERT_SHARP_DROP') ab='<span class="badge badge-red">급락</span>'; else ab='<span class="badge badge-blue">보유</span>';
-      html+=`<div class="pipe-signal-card"><div class="pipe-signal-header"><strong>${s.symbol}</strong> ${ab}</div><div style="font-size:11px;color:var(--text2)">${s.name}</div><div class="mono ${pctClass(s.profit_rate/100)}" style="font-size:14px;margin-top:4px">${s.profit_rate>0?'+':''}${s.profit_rate}%</div></div>`; }); html+='</div></div>'; }
+    html+=`<div class="pipe-stage" onclick="togglePipeDetail('${s.key}')" style="cursor:pointer" title="클릭하여 상세 로그 보기"><div class="pipe-icon ${cls}">${s.icon}</div><div class="pipe-label">${s.label}</div><div class="pipe-value" style="color:${cls==='pass'?'var(--green)':cls==='fail'?'var(--red)':'var(--text2)'}">${cls==='pass'?'PASS':cls==='fail'?'FAIL':cls==='active'?'...':'-'}</div></div>`; }); html+='</div>';
+
+  // 클릭 시 표시할 세부 로그 영역
+  html += '<div style="font-size:11px;color:var(--text2);margin:4px 0 8px;text-align:center">각 단계를 클릭하면 세부 로그를 확인할 수 있습니다</div>';
+  html += '<div id="pipeDetailArea" style="display:none;background:var(--surface2);border-radius:8px;padding:16px;margin-bottom:12px;font-size:12px;max-height:300px;overflow-y:auto"></div>';
+
+  // 세부 데이터를 전역에 저장
+  window._pipelineData = p;
+  window._pipelineDecision = decision;
+
+  // 최종 판단 박스
   const act=decision.action||'HOLD'; const actLabel=act==='BUY'?'매수 진입 가능':act==='SELL'?'매도 시그널 감지':act==='HOLD'?'관망 (시그널 없음)':'차단됨'; const actIcon=act==='BUY'?'🟢':act==='SELL'?'🔴':act==='HOLD'?'⚪':'🟡';
   html+=`<div class="decision-box ${act}"><div style="font-size:14px;color:var(--text2);margin-bottom:4px">AI 최종 판단</div><div class="decision-label">${actIcon} ${actLabel}</div><div style="font-size:12px;color:var(--text2);margin-top:8px">게이트: ${decision.gate_passed?'✅ 통과':'🚫 차단'} | 매도: ${decision.sell_signals?'🔴 있음':'없음'} | 매수: ${decision.buy_candidates?'🟢 있음':'없음'}</div></div>`;
   panel.innerHTML = html;
+}
+
+function togglePipeDetail(key) {
+  const area = document.getElementById('pipeDetailArea');
+  const p = window._pipelineData || {};
+  const data = p[key];
+  if (!data) { area.style.display='none'; return; }
+
+  // 이미 같은 키가 열려있으면 닫기
+  if (area.style.display !== 'none' && area.dataset.key === key) {
+    area.style.display = 'none'; return;
+  }
+  area.dataset.key = key;
+
+  let html = '';
+  const labels = {session:'🔐 세션 상태',maintenance:'🔧 시스템 상태',data:'📊 데이터 수집',position_signals:'📡 포지션 시그널',risk_gate:'🛡️ 리스크 게이트',evaluation:'🧠 매수 평가'};
+  html += `<div style="font-size:14px;font-weight:600;margin-bottom:10px">${labels[key]||key}</div>`;
+
+  if (key === 'session') {
+    const d = data.detail || {};
+    html += `<div class="gate-check"><span class="gate-icon">${data.ok?'✅':'🚫'}</span> 상태: ${data.ok?'활성':'만료/없음'}</div>`;
+    if (d.provider) html += `<div class="gate-check"><span style="color:var(--text2)">Provider:</span> ${d.provider}</div>`;
+    if (d.retrieved_at) html += `<div class="gate-check"><span style="color:var(--text2)">세션 획득:</span> ${d.retrieved_at}</div>`;
+    if (d.checked_at) html += `<div class="gate-check"><span style="color:var(--text2)">마지막 검증:</span> ${d.checked_at}</div>`;
+    if (d.cookie_count) html += `<div class="gate-check"><span style="color:var(--text2)">쿠키:</span> ${d.cookie_count}개 | 스토리지 키: ${d.storage_keys||0}개</div>`;
+    if (d.error || d._error) html += `<div style="color:var(--red);margin-top:8px">${d.error||d._error}</div>`;
+  }
+
+  else if (key === 'maintenance') {
+    const d = data.detail || {};
+    html += `<div class="gate-check"><span class="gate-icon">${data.ok?'✅':'⚠️'}</span> ${data.ok?'정상 운영 중':'점검 중'}</div>`;
+    if (d.message) html += `<div class="gate-check"><span style="color:var(--text2)">메시지:</span> ${d.message}</div>`;
+    if (d.from) html += `<div class="gate-check"><span style="color:var(--text2)">점검 시간:</span> ${d.from} ~ ${d.until}</div>`;
+    if (d.code) html += `<div class="gate-check"><span style="color:var(--text2)">코드:</span> ${d.code}</div>`;
+  }
+
+  else if (key === 'data') {
+    html += `<div class="gate-check"><span class="gate-icon">${data.ok?'✅':'🚫'}</span> 데이터 수집 ${data.ok?'성공':'실패'}</div>`;
+    html += `<div class="gate-check"><span style="color:var(--text2)">보유 포지션:</span> ${data.position_count||0}개</div>`;
+    html += `<div class="gate-check"><span style="color:var(--text2)">총 자산:</span> ${(data.total_asset||0).toLocaleString()}원</div>`;
+    html += `<div class="gate-check"><span style="color:var(--text2)">주문 가능:</span> ${(data.orderable||0).toLocaleString()}원</div>`;
+  }
+
+  else if (key === 'position_signals') {
+    const signals = data.signals || [];
+    if (signals.length === 0) {
+      html += '<div style="color:var(--text2)">보유 포지션 없음</div>';
+    } else {
+      signals.forEach(s => {
+        let badge=''; const pc = s.profit_rate>=0?'positive':'negative';
+        if (s.action==='SELL_STOP_LOSS') badge='<span class="badge badge-red">손절 매도</span>';
+        else if (s.action==='SELL_TAKE_PROFIT') badge='<span class="badge badge-green">익절 매도</span>';
+        else if (s.action==='ALERT_SHARP_DROP') badge='<span class="badge badge-red">급락 경고</span>';
+        else badge='<span class="badge badge-blue">보유 유지</span>';
+        html += `<div class="gate-check">${badge} <strong>${s.symbol}</strong> <span style="color:var(--text2)">${s.name}</span> <span class="mono ${pc}" style="margin-left:auto">${s.profit_rate>0?'+':''}${s.profit_rate}%</span></div>`;
+        html += `<div style="padding:0 0 6px 28px;color:var(--text2);font-size:11px">${s.reason}</div>`;
+      });
+    }
+  }
+
+  else if (key === 'risk_gate') {
+    const d = data.detail || {};
+    html += `<div style="text-align:center;margin-bottom:8px"><span class="badge ${d.passed?'badge-green':'badge-red'}" style="font-size:13px;padding:4px 14px">${d.passed?'GATE PASSED':'GATE BLOCKED'}</span></div>`;
+    (d.checks||[]).forEach(c => {
+      html += `<div class="gate-check"><span class="gate-icon">${c.passed?'✅':'🚫'}</span> ${c.description}</div>`;
+    });
+    if (d.blocked_reason) html += `<div style="margin-top:8px;padding:8px;background:rgba(239,68,68,0.1);border-radius:6px;color:var(--red)">${d.blocked_reason}</div>`;
+  }
+
+  else if (key === 'evaluation') {
+    const results = data.results || [];
+    if (results.length === 0) {
+      html += '<div style="color:var(--text2)">평가 대상 없음</div>';
+    } else {
+      results.forEach(e => {
+        const gc = e.grade==='A'?'var(--green)':e.grade==='B'?'var(--blue)':e.grade==='C'?'var(--yellow)':'var(--red)';
+        html += `<div class="gate-check"><span class="badge" style="background:${gc}20;color:${gc}">${e.grade}</span> <strong>${e.symbol}</strong> <span style="color:var(--text2)">${e.name}</span> <span class="mono" style="margin-left:auto">${e.score}/${e.max_score} (${e.pct}%)</span> <span class="badge" style="background:${gc}20;color:${gc}">${e.recommendation}</span></div>`;
+      });
+    }
+  }
+
+  // Raw JSON 토글
+  html += `<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--text2);font-size:11px">Raw JSON</summary><pre style="margin-top:6px;padding:8px;background:var(--bg);border-radius:4px;overflow-x:auto;font-size:10px;color:var(--text2)">${JSON.stringify(data, null, 2)}</pre></details>`;
+
+  area.innerHTML = html;
+  area.style.display = 'block';
 }
 
 // Screener
