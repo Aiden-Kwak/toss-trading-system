@@ -139,9 +139,10 @@ def run_tossctl(*args, timeout=15) -> dict | list | None:
 def run_script(script_name: str, *args, timeout=30) -> dict | list | None:
     """scripts/ 디렉토리의 Python 스크립트 실행"""
     try:
+        env = {**os.environ, "TOSS_TRADE_MODE": os.environ.get("TOSS_TRADE_MODE", "live")}
         result = subprocess.run(
             ["python3", str(SCRIPTS_DIR / script_name), *args],
-            capture_output=True, text=True, timeout=timeout
+            capture_output=True, text=True, timeout=timeout, env=env
         )
         if result.returncode == 0:
             return json.loads(result.stdout)
@@ -176,12 +177,17 @@ def load_config() -> dict:
 
 
 def send_notification(title: str, msg: str):
-    """macOS 알림 전송"""
+    """macOS + Discord 알림 전송"""
     try:
         subprocess.run([
             "osascript", "-e",
             f'display notification "{msg}" with title "Toss Trading" subtitle "{title}"'
         ], timeout=5)
+    except Exception:
+        pass
+    # Discord 알림
+    try:
+        run_script("notify.py", "error", "--message", f"{title}: {msg}")
     except Exception:
         pass
 
@@ -364,6 +370,8 @@ def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run
 
     if result.returncode == 0:
         log(f"  BUY SUCCESS: {symbol}")
+        run_script("notify.py", "trade", "--symbol", symbol, "--side", "buy",
+                    "--price", str(price), "--qty", str(qty), "--grade", grade, "--score", str(score), "--strategy", reason)
         log_result = run_script("trade-logger.py", "log",
                     "--symbol", symbol, "--side", "buy",
                     "--qty", str(qty), "--price", str(price),
@@ -412,8 +420,10 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool) -
         log(f"  SELL SUCCESS: {symbol}")
         pnl = signal.get("profit_rate", 0)
         state.today_pnl += pnl
-
         exit_reason = signal.get("action", "MANUAL")
+        run_script("notify.py", "trade", "--symbol", symbol, "--side", "sell",
+                    "--price", str(price), "--qty", str(qty),
+                    "--pnl_pct", str(round(pnl, 2)), "--exit_reason", exit_reason)
 
         # 거래 기록
         close_result = run_script("trade-logger.py", "close",
@@ -457,15 +467,26 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
 
     # 1. 세션 체크
     if not check_session():
+        prev = state.status
         state.status = DaemonStatus.PAUSED_SESSION
         log("  세션 만료! 재로그인 필요.")
-        send_notification("세션 만료", "tossctl auth login으로 재로그인하세요")
+        run_script("notify.py", "session", "--status", "expired")
+        if prev != DaemonStatus.PAUSED_SESSION:
+            run_script("notify.py", "daemon", "--status", "paused_session", "--detail", "세션 만료로 거래 중단")
         return False
+
+    # 세션이 복원된 경우 (이전에 만료였다면)
+    if state.status == DaemonStatus.PAUSED_SESSION:
+        run_script("notify.py", "session", "--status", "restored")
 
     # 2. 점검 체크
     if check_maintenance():
+        prev = state.status
         state.status = DaemonStatus.PAUSED_MAINTENANCE
         log("  시스템 점검 중. 대기.")
+        if prev != DaemonStatus.PAUSED_MAINTENANCE:
+            run_script("notify.py", "session", "--status", "maintenance")
+            run_script("notify.py", "daemon", "--status", "paused_maintenance", "--detail", "토스증권 시스템 점검 중")
         return False
 
     # 3. 장 시간 체크
@@ -489,6 +510,8 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             state.status = DaemonStatus.PAUSED_LOSS_LIMIT
             log(f"  일일 손실 한도 도달: {loss_pct:.2f}% (한도: {limit}%, 운용금: {daemon_capital:,.0f}원)")
             send_notification("거래 중단", f"일일 손실 {loss_pct:.1f}%로 한도 도달")
+            run_script("notify.py", "daemon", "--status", "paused_loss_limit",
+                        "--detail", f"일일 손실 {loss_pct:.1f}% (한도 {limit}%)")
             return False
 
     # 5. 연속 손절 냉각
@@ -498,9 +521,12 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         cooldown_min = config.get("cooldown_minutes", 30)
         log(f"  연속 {state.consecutive_losses}회 손절. {cooldown_min}분 냉각.")
         send_notification("냉각기", f"연속 {state.consecutive_losses}회 손절")
+        run_script("notify.py", "daemon", "--status", "paused_cooldown",
+                    "--detail", f"연속 {state.consecutive_losses}회 손절. {cooldown_min}분 대기")
         time.sleep(cooldown_min * 60)
         state.consecutive_losses = 0
         state.status = DaemonStatus.RUNNING
+        run_script("notify.py", "daemon", "--status", "running", "--detail", "냉각기 종료. 거래 재개")
 
     # 6. 보유 포지션 손절/익절 체크
     sell_signals = monitor_positions(state, config)
@@ -509,6 +535,11 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         if sym in protected:
             log(f"  {sym} 보호종목 → 매도 스킵")
             continue
+        # 시그널 감지 알림 (매도 전)
+        run_script("notify.py", "signal", "--symbol", sym,
+                    "--action", sig.get("action", ""),
+                    "--reason", sig.get("reason", ""),
+                    "--profit_rate", str(sig.get("profit_rate", 0)))
         execute_sell(sym, sig, state, dry_run)
 
     # 7. 리스크 게이트
@@ -651,6 +682,9 @@ def main():
     market = args.get("market", "us")
     dry_run = "dry-run" in args
 
+    # notify.py에 모드 전달
+    os.environ["TOSS_TRADE_MODE"] = "dry-run" if dry_run else "live"
+
     config = load_config()
     state = DaemonState()
     state.status = DaemonStatus.RUNNING
@@ -669,11 +703,23 @@ def main():
         print("  Ctrl+C로 취소할 수 있습니다.\n")
         time.sleep(10)
 
+    # 데몬 시작 알림
+    run_script("notify.py", "daemon", "--status", "running",
+                "--detail", f"{'DRY RUN' if dry_run else 'LIVE'} | {market.upper()} | 간격 {interval}초")
+
     retry_count = 0
     max_retries = 5
+    _last_market_open = None  # 장 마감 감지용
 
     while True:
         try:
+            # 장 마감 감지 → 일일 보고서
+            currently_open = is_market_open(market)
+            if _last_market_open is True and currently_open is False and state.today_trades > 0:
+                log("  장 마감 감지 → 일일 보고서 전송")
+                run_script("notify.py", "report", "--type", "daily")
+            _last_market_open = currently_open
+
             ok = run_cycle(state, config, dry_run, market)
             state.save()
 
@@ -701,6 +747,7 @@ def main():
             log("\n  사용자 중단")
             state.status = DaemonStatus.STOPPED
             state.save()
+            run_script("notify.py", "daemon", "--status", "stopped", "--detail", "사용자 중단 (Ctrl+C)")
             break
 
         except Exception as e:
@@ -709,6 +756,7 @@ def main():
             state.save()
             log(f"  예외: {e}")
             traceback.print_exc()
+            run_script("notify.py", "daemon", "--status", "error", "--detail", str(e)[:200])
             time.sleep(60)
 
 

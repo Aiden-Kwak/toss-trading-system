@@ -6,6 +6,9 @@ session.json
 trading-permission.json
 trading-lineage.json
 
+# Secrets
+.env
+
 # Python
 __pycache__/
 *.pyc
