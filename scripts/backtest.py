@@ -60,66 +60,149 @@ def compute_alphas_row(o, c, h, l, ref_close):
     }
 
 
-def compute_daily_score(row, prev_close, volume, is_kr=False):
-    """일일 종합 점수 계산 (100점 만점, signal-engine v2와 동일)
+def _compute_rsi(closes, period=14):
+    if len(closes) < period + 1: return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i-1]
+        gains.append(max(0, d)); losses.append(max(0, -d))
+    ag = sum(gains[-period:]) / period
+    al = sum(losses[-period:]) / period
+    if al == 0: return 100.0
+    return round(100 - 100 / (1 + ag / al), 2)
 
-    v2: "오늘 사야 하는가"를 판단하는 타이밍 시그널 중심.
+def _compute_bb_pctb(closes, period=20):
+    if len(closes) < period: return 0.5
+    w = closes[-period:]
+    ma = sum(w) / period
+    std = (sum((x-ma)**2 for x in w) / period) ** 0.5
+    u, lo = ma + 2*std, ma - 2*std
+    return round((closes[-1] - lo) / (u - lo), 3) if (u - lo) > 0 else 0.5
+
+def _compute_ema(closes, period=9):
+    if len(closes) < period: return closes[-1] if closes else 0
+    k = 2 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for p in closes[period:]: ema = p * k + ema * (1 - k)
+    return ema
+
+def _compute_vol_ratio(volumes, period=20):
+    if len(volumes) < 2: return 1.0
+    avg = sum(volumes[:-1][-period:]) / min(len(volumes)-1, period)
+    return round(volumes[-1] / avg, 2) if avg > 0 else 1.0
+
+
+def compute_daily_score(row, prev_close, volume, is_kr=False, history=None):
+    """일일 종합 점수 계산 (100점 만점, signal-engine v3와 동일)
+
+    v3: 기술적 지표 통합 (RSI/볼린저/EMA/거래량비율).
+    history: 과거 종가/거래량 리스트 {'closes': [...], 'volumes': [...]} (선택)
     """
     o, h, l, c = row["Open"], row["High"], row["Low"], row["Close"]
     change_rate = (c - prev_close) / prev_close if prev_close > 0 else 0
 
     alphas = compute_alphas_row(o, c, h, l, prev_close)
     a101 = alphas["alpha101"]
+    a33 = alphas["alpha33"]
     a54 = alphas["alpha54"]
     momentum_val = alphas["momentum"]
     mean_rev_val = alphas["mean_reversion"]
 
+    # 기술적 지표 (히스토리 있을 때)
+    rsi, bb_pctb, ema9, ema21, vol_ratio = None, None, None, None, None
+    if history:
+        closes = history.get("closes", [])
+        volumes = history.get("volumes", [])
+        if len(closes) >= 15:
+            rsi = _compute_rsi(closes)
+            bb_pctb = _compute_bb_pctb(closes)
+            ema9 = _compute_ema(closes, 9)
+            ema21 = _compute_ema(closes, 21)
+        if len(volumes) >= 2:
+            vol_ratio = _compute_vol_ratio(volumes)
+
     total = 0
 
-    # 1. 방향성 시그널 (0-30): 알파 동의 카운트
-    bullish = sum(1 for v in [a101, alphas["alpha33"], a54 - 0.5, momentum_val * 10] if v > 0.05)
-    bearish = sum(1 for v in [a101, alphas["alpha33"], a54 - 0.5, momentum_val * 10] if v < -0.05)
-    if bullish >= 4: dir_score = 30
-    elif bullish >= 3: dir_score = 22
-    elif bullish >= 2: dir_score = 12
-    elif bearish >= 3: dir_score = 0
-    else: dir_score = 5
-    total += dir_score
+    # 1. 방향성 (0-25)
+    bullish = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v > 0.05)
+    bearish = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v < -0.05)
+    if bullish >= 4: d = 25
+    elif bullish >= 3: d = 18
+    elif bullish >= 2: d = 10
+    elif bearish >= 3: d = 0
+    else: d = 3
+    total += d
 
-    # 2. 모멘텀 품질 (0-25)
-    abs_change = abs(change_rate)
-    sweet = (0.02 <= abs_change <= 0.08) if is_kr else (0.015 <= abs_change <= 0.05)
-    too_hot = abs_change > (0.15 if is_kr else 0.10)
-    if change_rate > 0 and sweet: mom = 25
-    elif change_rate > 0 and not too_hot: mom = 15
-    elif too_hot: mom = 0
-    elif abs_change < 0.005: mom = 0  # 보합 → 진입 이유 없음
-    elif change_rate < 0 and abs_change < 0.03: mom = 5
+    # 2. 모멘텀 + RSI (0-20)
+    ac = abs(change_rate)
+    sweet = (0.02 <= ac <= 0.08) if is_kr else (0.015 <= ac <= 0.05)
+    hot = ac > (0.15 if is_kr else 0.10)
+    if change_rate > 0 and sweet: mom = 15
+    elif change_rate > 0 and not hot: mom = 10
+    elif hot or ac < 0.005: mom = 0
+    elif change_rate < 0 and ac < 0.03: mom = 3
     else: mom = 0
+    rsi_adj = 0
+    if rsi is not None:
+        if rsi <= 30: rsi_adj = 5
+        elif rsi <= 40: rsi_adj = 2
+        elif rsi >= 70: rsi_adj = -5
+        elif rsi >= 60: rsi_adj = -2
+    mom = max(0, min(20, mom + rsi_adj))
     total += mom
 
-    # 3. 가격 액션 (0-20): 캔들 품질
-    if a101 > 0.5 and a54 > 0.7: action = 20
-    elif a101 > 0.3 and a54 > 0.5: action = 15
-    elif a101 > 0 and a54 > 0.4: action = 10
-    elif a101 < -0.3: action = 0
-    else: action = 5
-    total += action
+    # 3. 가격액션 + 볼린저 (0-15)
+    if a101 > 0.5 and a54 > 0.7: pa = 12
+    elif a101 > 0.3 and a54 > 0.5: pa = 9
+    elif a101 > 0 and a54 > 0.4: pa = 6
+    elif a101 < -0.3: pa = 0
+    else: pa = 3
+    bb_adj = 0
+    if bb_pctb is not None:
+        if bb_pctb <= 0.1: bb_adj = 3
+        elif bb_pctb <= 0.3: bb_adj = 1
+        elif bb_pctb >= 0.9: bb_adj = -3
+        elif bb_pctb >= 0.8: bb_adj = -1
+    pa = max(0, min(15, pa + bb_adj))
+    total += pa
 
-    # 4. 시장 컨텍스트 (0-25)
+    # 4. 컨텍스트 + EMA (0-20)
     if abs(change_rate) >= 0.05: regime = "crisis"; ctx = 0
     elif change_rate <= -0.01: regime = "bear"; ctx = 0
-    elif change_rate >= 0.01: regime = "bull"; ctx = 20
-    else: regime = "range"; ctx = 10
-
+    elif change_rate >= 0.01: regime = "bull"; ctx = 15
+    else: regime = "range"; ctx = 8
+    ema_adj = 0
+    if ema9 is not None and ema21 is not None:
+        if ema9 > ema21: ema_adj = 5
+        elif ema9 < ema21: ema_adj = -5
     trend_warning = None
     if momentum_val < -0.02 and mean_rev_val > 0.01:
-        trend_warning = "falling_knife"
-        ctx = max(0, ctx - 10)
+        trend_warning = "falling_knife"; ctx = max(0, ctx - 8)
+    ctx = max(0, min(20, ctx + ema_adj))
     total += ctx
 
+    # 5. 기술적 확인 (0-20)
+    tech = 0
+    if rsi is not None:
+        signals = 0
+        if rsi <= 35: signals += 1
+        if ema9 is not None and ema21 is not None and ema9 > ema21: signals += 1
+        if bb_pctb is not None and bb_pctb <= 0.3: signals += 1
+        if vol_ratio is not None and vol_ratio >= 1.5: signals += 1
+        if signals >= 4: tech = 20
+        elif signals >= 3: tech = 15
+        elif signals >= 2: tech = 8
+        elif signals >= 1: tech = 3
+        # 역방향
+        anti = 0
+        if rsi >= 70: anti += 1
+        if ema9 is not None and ema21 is not None and ema9 < ema21: anti += 1
+        if bb_pctb is not None and bb_pctb >= 0.9: anti += 1
+        if anti >= 2: tech = 0
+    total += tech
+
     total = max(0, total)
-    pct = total  # 100점 만점이라 pct = total
+    pct = total
 
     if pct >= 75: grade = "A"
     elif pct >= 55: grade = "B"
@@ -132,10 +215,15 @@ def compute_daily_score(row, prev_close, volume, is_kr=False):
         "grade": grade,
         "regime": regime,
         "trend_warning": trend_warning,
-        "direction": dir_score,
+        "direction": d,
         "momentum": mom,
-        "action": action,
+        "action": pa,
         "context": ctx,
+        "technical": tech,
+        "rsi": rsi,
+        "bb_pctb": bb_pctb,
+        "ema_cross": "golden" if (ema9 and ema21 and ema9 > ema21) else "death" if (ema9 and ema21 and ema9 < ema21) else None,
+        "vol_ratio": vol_ratio,
         "change_rate": round(change_rate * 100, 2),
         "alphas": alphas,
     }
@@ -266,8 +354,14 @@ def run_backtest(
         date_str = df.index[i].strftime("%Y-%m-%d")
         volume = row.get("Volume", 0)
 
-        # T일 채점
-        score = compute_daily_score(row, prev_close, volume, is_kr)
+        # 히스토리 구성 (기술적 지표용, 최근 30일)
+        start_idx = max(0, i - 29)
+        hist_closes = [df.iloc[j]["Close"] for j in range(start_idx, i + 1)]
+        hist_volumes = [df.iloc[j].get("Volume", 0) for j in range(start_idx, i + 1)]
+        history = {"closes": hist_closes, "volumes": hist_volumes} if len(hist_closes) >= 15 else None
+
+        # T일 채점 (기술적 지표 포함)
+        score = compute_daily_score(row, prev_close, volume, is_kr, history=history)
         grade = score["grade"]
         grade_counts[grade] += 1
 
