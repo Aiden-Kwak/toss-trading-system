@@ -387,7 +387,7 @@ playwright install chromium
 
 # 3. Python 의존성
 cd toss-trading-system && python3 -m venv .venv
-source .venv/bin/activate && pip install yfinance pandas
+source .venv/bin/activate && pip install -r requirements.txt
 
 # 4. 스킬 복사
 cp -r skills/toss-* ~/.claude/skills/
