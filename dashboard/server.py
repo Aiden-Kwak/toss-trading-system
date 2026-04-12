@@ -347,6 +347,25 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 self._json_response({"status": "stopped", "message": "데몬 미실행"})
 
+        elif path == "/api/backtest/day":
+            syms = params.get("symbols", "TSLA")
+            mkt = params.get("market", "us")
+            date = params.get("date", "")
+            cmd = ["python3", str(SCRIPTS_DIR / "day-simulator.py"), "--symbols", syms, "--market", mkt, "--output", "json"]
+            if date: cmd.extend(["--date", date])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=TOSS_ENV)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
+
+        elif path == "/api/backtest/period":
+            syms = params.get("symbols", "TSLA")
+            period = params.get("period", "6mo")
+            cmd = ["python3", str(SCRIPTS_DIR / "backtest.py"), "--symbol", syms, "--period", period, "--output", "json"]
+            if params.get("stop-loss"): cmd.extend(["--stop-loss", params["stop-loss"]])
+            if params.get("take-profit"): cmd.extend(["--take-profit", params["take-profit"]])
+            if params.get("grades"): cmd.extend(["--grades", params["grades"]])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=TOSS_ENV)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
+
         elif path == "/api/screener/scan":
             cmd_args = ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "scan"]
             if params.get("source"): cmd_args.extend(["--source", params["source"]])

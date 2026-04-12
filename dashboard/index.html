@@ -139,6 +139,7 @@ button.primary:hover { opacity:0.9; }
 <div class="tab-bar">
   <div class="tab active" onclick="switchTab('dashboard')">대시보드</div>
   <div class="tab" onclick="switchTab('screener')">스크리너</div>
+  <div class="tab" onclick="switchTab('backtest')">백테스트</div>
   <div class="tab" onclick="switchTab('risk')">리스크</div>
   <div class="tab" onclick="switchTab('journal')">기록</div>
 </div>
@@ -200,7 +201,38 @@ button.primary:hover { opacity:0.9; }
 </div>
 </div>
 
-<!-- ==================== TAB 3: 리스크 ==================== -->
+<!-- ==================== TAB 3: 백테스트 ==================== -->
+<div class="tab-page" id="page-backtest">
+<div class="container">
+  <!-- Day Simulator -->
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">하루 시뮬레이션 (5분봉 리플레이)</span></div>
+    <div class="input-row" style="margin-top:0">
+      <input type="text" id="daySymbols" placeholder="종목 (쉼표 구분: TSLA,NVDA,AAPL)">
+      <input type="text" id="dayDate" placeholder="날짜 (비우면 최근, 예: 2026-04-10)" style="max-width:200px">
+      <select id="dayMarket" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="us">미국</option><option value="kr">한국</option></select>
+      <button class="primary" onclick="runDaySim()">시뮬레이션</button>
+    </div>
+    <div id="dayResult" style="margin-top:16px"><div class="loading">종목을 입력하고 시뮬레이션을 실행하세요</div></div>
+  </div>
+
+  <!-- Period Backtest -->
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">기간 백테스트 (일봉, T+1 시가 매수)</span></div>
+    <div class="input-row" style="margin-top:0">
+      <input type="text" id="btSymbols" placeholder="종목 (쉼표 구분: PLTR,TSLA)">
+      <select id="btPeriod" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="3mo">3개월</option><option value="6mo" selected>6개월</option><option value="1y">1년</option></select>
+      <input type="text" id="btStopLoss" placeholder="손절% (기본: -3)" style="max-width:100px">
+      <input type="text" id="btTakeProfit" placeholder="익절% (기본: 7)" style="max-width:100px">
+      <select id="btGrades" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="A,B" selected>A+B 등급</option><option value="A">A 등급만</option></select>
+      <button class="primary" onclick="runBacktest()">백테스트</button>
+    </div>
+    <div id="btResult" style="margin-top:16px"><div class="loading">종목을 입력하고 백테스트를 실행하세요</div></div>
+  </div>
+</div>
+</div>
+
+<!-- ==================== TAB 4: 리스크 ==================== -->
 <div class="tab-page" id="page-risk">
 <div class="container">
   <div class="card">
@@ -391,6 +423,112 @@ async function loadSuggestions() { const panel=document.getElementById('suggestP
 async function applySuggestion(id) { const r=await fetch(API+'/api/trades/apply-suggestion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}); const d=await r.json(); if(d.applied) loadSuggestions(); }
 
 // Load all (dashboard tab)
+// Backtest: Day Simulation
+async function runDaySim() {
+  const syms = document.getElementById('daySymbols').value.trim(); if(!syms) return;
+  const date = document.getElementById('dayDate').value.trim();
+  const mkt = document.getElementById('dayMarket').value;
+  const panel = document.getElementById('dayResult');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 5분봉 시뮬레이션 중 (최대 60초)...</div>';
+  let url = API+`/api/backtest/day?symbols=${syms}&market=${mkt}`;
+  if (date) url += `&date=${date}`;
+  const r = await fetch(url); const d = await r.json();
+  if (d.error) { panel.innerHTML = `<div class="loading">${d.error}</div>`; return; }
+
+  let html = `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+    <div class="stat-mini"><div class="stat-mini-value">${d.date}</div><div class="stat-mini-label">날짜</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.total_trades}</div><div class="stat-mini-label">거래</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.winning}/${d.losing}</div><div class="stat-mini-label">승/패</div></div>
+    <div class="stat-mini"><div class="stat-mini-value ${d.total_pnl_pct>=0?'positive':'negative'}">${d.total_pnl_pct>0?'+':''}${d.total_pnl_pct}%</div><div class="stat-mini-label">총 수익</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.total_bars}</div><div class="stat-mini-label">5분봉</div></div>
+  </div>`;
+
+  // 타임라인
+  if (d.timeline?.length) {
+    html += '<div style="font-size:12px;color:var(--text2);margin-bottom:6px">타임라인</div>';
+    html += '<div style="max-height:300px;overflow-y:auto;background:var(--surface2);border-radius:8px;padding:12px;font-family:monospace;font-size:12px;line-height:1.8">';
+    d.timeline.forEach(t => {
+      t.events.forEach(ev => {
+        const pos = t.positions > 0 ? `<span style="color:var(--text2)">[포지션 ${t.positions}]</span>` : '';
+        html += `<div><span style="color:var(--blue)">${t.time}</span>  ${ev} ${pos}</div>`;
+      });
+    });
+    html += '</div>';
+  }
+
+  // 거래 내역
+  if (d.trades?.length) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">거래 내역</div>';
+    html += '<table><tr><th>종목</th><th>진입</th><th>청산</th><th>등급</th><th>진입가</th><th>청산가</th><th>수익률</th><th>사유</th></tr>';
+    d.trades.forEach(t => {
+      html += `<tr><td><strong>${t.symbol}</strong></td><td class="mono">${t.entry_time}</td><td class="mono">${t.exit_time}</td><td>${t.entry_grade}</td><td class="mono">${t.entry_price}</td><td class="mono">${t.exit_price}</td><td class="${t.pnl_pct>=0?'positive':'negative'} mono">${t.pnl_pct>0?'+':''}${t.pnl_pct}%</td><td style="font-size:11px">${t.exit_reason}</td></tr>`;
+    });
+    html += '</table>';
+  }
+
+  // 점수 변화
+  if (d.score_history) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">종목별 점수 변화</div>';
+    for (const [sym, scores] of Object.entries(d.score_history)) {
+      if (!scores?.length) continue;
+      const vals = scores.map(s=>s.score); const grades = scores.map(s=>s.grade);
+      html += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><strong>${sym}</strong>: 점수 ${Math.min(...vals).toFixed(0)}~${Math.max(...vals).toFixed(0)} | A=${grades.filter(g=>g==='A').length} B=${grades.filter(g=>g==='B').length} C=${grades.filter(g=>g==='C').length} D=${grades.filter(g=>g==='D').length}</div>`;
+    }
+  }
+  panel.innerHTML = html;
+}
+
+// Backtest: Period
+async function runBacktest() {
+  const syms = document.getElementById('btSymbols').value.trim(); if(!syms) return;
+  const period = document.getElementById('btPeriod').value;
+  const sl = document.getElementById('btStopLoss').value.trim() || '-0.03';
+  const tp = document.getElementById('btTakeProfit').value.trim() || '0.07';
+  const grades = document.getElementById('btGrades').value;
+  const panel = document.getElementById('btResult');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 백테스트 중 (최대 60초)...</div>';
+  const r = await fetch(API+`/api/backtest/period?symbols=${syms}&period=${period}&stop-loss=${sl}&take-profit=${tp}&grades=${grades}`);
+  const data = await r.json();
+  if (data.error) { panel.innerHTML = `<div class="loading">${data.error}</div>`; return; }
+  const results = Array.isArray(data) ? data : [data];
+
+  let html = '';
+  // 비교표
+  if (results.length > 1) {
+    html += '<table><tr><th>종목</th><th>거래</th><th>승률</th><th>전략</th><th>B&H</th><th>초과수익</th><th>수수료</th><th>샤프</th></tr>';
+    results.forEach(r => {
+      const ex = r.excess_return_pct||0;
+      html += `<tr><td><strong>${r.symbol}</strong></td><td>${r.total_trades}</td><td>${r.win_rate}%</td><td class="${r.total_pnl_pct>=0?'positive':'negative'} mono">${r.total_pnl_pct>0?'+':''}${r.total_pnl_pct}%</td><td class="mono">${r.buy_and_hold_pct>0?'+':''}${r.buy_and_hold_pct}%</td><td class="${ex>=0?'positive':'negative'} mono">${ex>0?'+':''}${ex}%</td><td class="mono">${r.total_cost_pct}%</td><td class="mono">${r.sharpe_approx}</td></tr>`;
+    });
+    html += '</table>';
+  }
+
+  // 개별 종목 상세
+  results.forEach(r => {
+    html += `<div style="margin-top:16px;padding:16px;background:var(--surface2);border-radius:8px">`;
+    html += `<div style="font-size:16px;font-weight:700;margin-bottom:12px">${r.symbol} (${r.market}) — ${r.period}</div>`;
+    html += `<div class="stats-grid">
+      <div class="stat-mini"><div class="stat-mini-value">${r.win_rate}%</div><div class="stat-mini-label">승률</div></div>
+      <div class="stat-mini"><div class="stat-mini-value ${r.total_pnl_pct>=0?'positive':'negative'}">${r.total_pnl_pct>0?'+':''}${r.total_pnl_pct}%</div><div class="stat-mini-label">전략 수익</div></div>
+      <div class="stat-mini"><div class="stat-mini-value">${r.buy_and_hold_pct>0?'+':''}${r.buy_and_hold_pct}%</div><div class="stat-mini-label">Buy & Hold</div></div>
+      <div class="stat-mini"><div class="stat-mini-value ${(r.excess_return_pct||0)>=0?'positive':'negative'}">${(r.excess_return_pct||0)>0?'+':''}${r.excess_return_pct||0}%</div><div class="stat-mini-label">초과수익</div></div>
+      <div class="stat-mini"><div class="stat-mini-value">${r.sharpe_approx}</div><div class="stat-mini-label">샤프</div></div>
+      <div class="stat-mini"><div class="stat-mini-value">${r.total_trades}</div><div class="stat-mini-label">거래 수</div></div>
+    </div>`;
+    // 최근 거래
+    if (r.trades?.length) {
+      html += '<div style="font-size:12px;color:var(--text2);margin:8px 0 4px">최근 거래 (10건)</div>';
+      html += '<table><tr><th>시그널</th><th>진입</th><th>청산</th><th>등급</th><th>진입가</th><th>청산가</th><th>수익률</th><th>사유</th></tr>';
+      r.trades.slice(-10).forEach(t => {
+        html += `<tr><td class="mono">${t.signal_date||''}</td><td class="mono">${t.entry_date}</td><td class="mono">${t.exit_date}</td><td>${t.entry_grade}</td><td class="mono">${t.entry_price}</td><td class="mono">${t.exit_price}</td><td class="${t.pnl_pct>=0?'positive':'negative'} mono">${t.pnl_pct>0?'+':''}${t.pnl_pct}%</td><td style="font-size:11px">${t.exit_reason}</td></tr>`;
+      });
+      html += '</table>';
+    }
+    html += '</div>';
+  });
+  panel.innerHTML = html;
+}
+
 // Daemon status
 async function loadDaemon() {
   const r = await fetch(API+'/api/daemon/status'); const d = await r.json();
