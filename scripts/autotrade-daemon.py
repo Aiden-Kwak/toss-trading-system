@@ -423,30 +423,57 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         state.status = DaemonStatus.RUNNING
         return True
 
-    # 9. 매수 실행 (상위 1개만)
-    for c in candidates[:1]:
-        sym = c.get("symbol", "")
-        if sym in protected:
-            log(f"  {sym} 보호종목 → 매수 스킵")
-            continue
+    # 9. 매수 실행 — 포지션 한도까지 병렬 진입
+    max_pos = config.get("max_positions", 2)
+    # 현재 보유 포지션 수 (보호종목 제외)
+    current_positions = set()
+    if isinstance(positions, list):
+        for p in positions:
+            sym_p = p.get("symbol", p.get("product_code", ""))
+            if p.get("quantity", 0) > 0 and sym_p not in protected:
+                current_positions.add(sym_p)
 
-        price = c.get("current_price", 0)
-        if price <= 0:
-            continue
-
-        # 포지션 사이징: 주문가능금액 기준
+    slots = max_pos - len(current_positions)
+    if slots <= 0:
+        log(f"  포지션 한도 도달 ({len(current_positions)}/{max_pos}) → 매수 스킵")
+    else:
         orderable = 0
         if isinstance(summary, dict) and not summary.get("_error"):
             orderable = summary.get("orderable_amount_krw", 0)
 
-        if orderable < price:
-            log(f"  {sym} 주문가능금액 부족 ({orderable:,.0f}원 < {price:,.0f}원) → 스킵")
-            continue
+        # 잔여 슬롯만큼 후보 순회하며 매수
+        bought = 0
+        for c in candidates:
+            if bought >= slots:
+                break
 
-        max_invest = min(orderable, total_asset * config.get("max_position_pct", 10) / 100)
-        qty = max(1, int(max_invest / price))
+            sym = c.get("symbol", "")
+            if sym in protected or sym in current_positions:
+                log(f"  {sym} 보호/보유 종목 → 스킵")
+                continue
 
-        execute_buy(sym, price, qty, state, dry_run)
+            price = c.get("current_price", 0)
+            if price <= 0:
+                continue
+
+            # 주문가능금액을 남은 슬롯에 균등 배분
+            per_slot = orderable / (slots - bought) if (slots - bought) > 0 else 0
+            max_invest = min(per_slot, total_asset * config.get("max_position_pct", 10) / 100)
+
+            if max_invest < price:
+                log(f"  {sym} 금액 부족 (슬롯당 {per_slot:,.0f}원 < {price:,.0f}원) → 스킵")
+                continue
+
+            qty = max(1, int(max_invest / price))
+            cost = qty * price
+
+            if execute_buy(sym, price, qty, state, dry_run):
+                orderable -= cost  # 잔여 주문가능금액 차감
+                current_positions.add(sym)
+                bought += 1
+
+        if bought > 0:
+            log(f"  {bought}종목 매수 완료 (포지션: {len(current_positions)}/{max_pos})")
 
     state.status = DaemonStatus.RUNNING
     return True
