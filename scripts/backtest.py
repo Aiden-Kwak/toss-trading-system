@@ -183,6 +183,22 @@ class BacktestResult:
     daily_scores: list = field(default_factory=list)
 
 
+def compute_atr(df, period=14) -> dict:
+    """일별 ATR(Average True Range) 계산 → 종목 변동성 측정"""
+    atrs = {}
+    for i in range(period, len(df)):
+        window = df.iloc[i-period:i]
+        true_ranges = []
+        for j in range(1, len(window)):
+            h, l, pc = window.iloc[j]["High"], window.iloc[j]["Low"], window.iloc[j-1]["Close"]
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            true_ranges.append(tr)
+        atr = sum(true_ranges) / len(true_ranges) if true_ranges else 0
+        date_str = df.index[i].strftime("%Y-%m-%d")
+        atrs[date_str] = atr
+    return atrs
+
+
 def run_backtest(
     symbol: str,
     period: str = "6mo",
@@ -191,6 +207,11 @@ def run_backtest(
     take_profit: float = 0.07,
     max_hold_days: int = 5,
     cost_per_trade: float = 0.001,  # 편도 0.1% (왕복 0.2%)
+    use_dip_buy: bool = True,       # 딥 바잉 (시가 대비 하락 시 매수)
+    dip_pct: float = 0.005,         # 딥 바잉 기준: 시가 대비 -0.5%
+    use_atr_stops: bool = True,     # ATR 기반 동적 손익절
+    atr_sl_mult: float = 1.5,       # ATR x N = 손절 거리
+    atr_tp_mult: float = 3.0,       # ATR x N = 익절 거리
 ) -> BacktestResult:
     """
     백테스트 실행
@@ -228,6 +249,9 @@ def run_backtest(
         buy_and_hold_pct=round(buy_and_hold, 2),
     )
 
+    # ATR 계산 (14일 평균 변동폭)
+    atrs = compute_atr(df) if use_atr_stops else {}
+
     grade_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
     trades = []
     daily_scores_list = []
@@ -258,7 +282,30 @@ def run_backtest(
 
         # T+1 매수 실행 (전일 시그널이 있었으면)
         if pending_entry and not in_position:
-            entry_price = row["Open"]  # T+1 시가에 매수
+            open_price = row["Open"]
+
+            if use_dip_buy:
+                # 딥 바잉: 시가 대비 dip_pct 하락한 가격을 목표
+                # 장중 저가가 목표가 이하면 → 목표가에 체결됐다고 가정
+                dip_target = open_price * (1 - dip_pct)
+                if row["Low"] <= dip_target:
+                    entry_price = dip_target  # 딥에서 매수 성공
+                else:
+                    # 딥 없이 상승만 → 매수 포기 (다음 기회 대기)
+                    pending_entry = None
+                    continue
+            else:
+                entry_price = open_price  # 기존: 시가에 바로 매수
+
+            # ATR 기반 동적 손익절
+            atr_val = atrs.get(date_str, 0)
+            if use_atr_stops and atr_val > 0:
+                dynamic_sl = -(atr_val * atr_sl_mult / entry_price)  # ATR x 1.5 / 진입가 = 비율
+                dynamic_tp = atr_val * atr_tp_mult / entry_price     # ATR x 3.0 / 진입가 = 비율
+            else:
+                dynamic_sl = stop_loss
+                dynamic_tp = take_profit
+
             current_trade = Trade(
                 signal_date=pending_entry["date"],
                 entry_date=date_str,
@@ -266,6 +313,9 @@ def run_backtest(
                 entry_grade=pending_entry["grade"],
                 entry_score=pending_entry["score"],
             )
+            # 동적 손익절을 trade에 저장 (나중에 청산 시 사용)
+            current_trade._dynamic_sl = dynamic_sl
+            current_trade._dynamic_tp = dynamic_tp
             in_position = True
             pending_entry = None
 
@@ -282,12 +332,16 @@ def run_backtest(
             exit_reason = None
             exit_price = row["Close"]
 
-            if low_pnl <= stop_loss:
+            # 동적 손익절 사용 (ATR 기반)
+            eff_sl = getattr(current_trade, '_dynamic_sl', stop_loss)
+            eff_tp = getattr(current_trade, '_dynamic_tp', take_profit)
+
+            if low_pnl <= eff_sl:
                 exit_reason = "STOP_LOSS"
-                exit_price = current_trade.entry_price * (1 + stop_loss)
-            elif high_pnl >= take_profit:
+                exit_price = current_trade.entry_price * (1 + eff_sl)
+            elif high_pnl >= eff_tp:
                 exit_reason = "TAKE_PROFIT"
-                exit_price = current_trade.entry_price * (1 + take_profit)
+                exit_price = current_trade.entry_price * (1 + eff_tp)
             elif days_held >= max_hold_days:
                 exit_reason = "MAX_HOLD"
                 exit_price = row["Close"]
