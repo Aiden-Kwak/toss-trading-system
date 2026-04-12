@@ -386,6 +386,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             cmd = [PYTHON, str(SCRIPTS_DIR / "backtest.py"), "--symbol", syms, "--period", period, "--output", "json"]
             if params.get("stop-loss"): cmd.extend(["--stop-loss", params["stop-loss"]])
             if params.get("take-profit"): cmd.extend(["--take-profit", params["take-profit"]])
+            if params.get("max-hold"): cmd.extend(["--max-hold", params["max-hold"]])
             if params.get("grades"): cmd.extend(["--grades", params["grades"]])
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=TOSS_ENV)
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})

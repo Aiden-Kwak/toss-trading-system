@@ -233,12 +233,26 @@ button.save:hover { opacity:.85; }
   <div class="card full-width">
     <div class="card-header"><span class="card-title">기간 백테스트 (일봉, T+1 시가 매수)</span></div>
     <div class="input-row" style="margin-top:0">
-      <input type="text" id="btSymbols" placeholder="종목 (PLTR,TSLA 또는 종목코드: 005930,035720)">
-      <select id="btPeriod" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="3mo">3개월</option><option value="6mo" selected>6개월</option><option value="1y">1년</option></select>
-      <input type="text" id="btStopLoss" placeholder="손절% (기본: -3)" style="max-width:100px">
-      <input type="text" id="btTakeProfit" placeholder="익절% (기본: 7)" style="max-width:100px">
-      <select id="btGrades" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="A,B" selected>A+B 등급</option><option value="A">A 등급만</option></select>
+      <input type="text" id="btSymbols" placeholder="종목 (PLTR,TSLA 또는 종목코드: 005930,035720)" style="min-width:200px">
+      <select id="btPeriod" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="3mo">3개월</option><option value="6mo" selected>6개월</option><option value="1y">1년</option><option value="2y">2년</option></select>
+      <select id="btGrades" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="A,B" selected>A+B 등급</option><option value="A">A 등급만</option><option value="A,B,C">A+B+C 등급</option></select>
       <button class="primary" onclick="runBacktest()">백테스트</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px">
+      <div class="setting-item"><div class="setting-label">손절선 %</div><input class="setting-input" type="number" id="btStopLoss" value="-3" step="0.5" min="-15" max="0"><div class="setting-unit">진입가 대비</div></div>
+      <div class="setting-item"><div class="setting-label">익절선 %</div><input class="setting-input" type="number" id="btTakeProfit" value="7" step="0.5" min="1" max="30"><div class="setting-unit">진입가 대비</div></div>
+      <div class="setting-item"><div class="setting-label">최대 보유일</div><input class="setting-input" type="number" id="btMaxHold" value="5" step="1" min="1" max="20"><div class="setting-unit">일</div></div>
+      <div class="setting-item"><div class="setting-label">수수료 (편도)</div><input class="setting-input" type="number" id="btCost" value="0.001" step="0.0005" min="0" max="0.01"><div class="setting-unit">0.001 = 0.1%</div></div>
+      <div class="setting-item"><div class="setting-label">프리셋</div>
+        <select class="setting-input" id="btPreset" onchange="applyBtPreset()" style="font-size:12px">
+          <option value="">직접 설정</option>
+          <option value="conservative">보수적 (-2/5/3일)</option>
+          <option value="default">기본 (-3/7/5일)</option>
+          <option value="aggressive">공격적 (-5/10/7일)</option>
+          <option value="scalping">스캘핑 (-1.5/3/2일)</option>
+        </select>
+        <div class="setting-unit">빠른 설정</div>
+      </div>
     </div>
     <div id="btResult" style="margin-top:16px"><div class="loading">종목을 입력하고 백테스트를 실행하세요</div></div>
   </div>
@@ -660,6 +674,23 @@ async function runDaySim() {
   panel.innerHTML = html;
 }
 
+// Backtest: Presets
+function applyBtPreset() {
+  const preset = document.getElementById('btPreset').value;
+  const presets = {
+    conservative: {sl:-2, tp:5, hold:3, cost:0.001},
+    default:      {sl:-3, tp:7, hold:5, cost:0.001},
+    aggressive:   {sl:-5, tp:10, hold:7, cost:0.001},
+    scalping:     {sl:-1.5, tp:3, hold:2, cost:0.001},
+  };
+  const p = presets[preset];
+  if (!p) return;
+  document.getElementById('btStopLoss').value = p.sl;
+  document.getElementById('btTakeProfit').value = p.tp;
+  document.getElementById('btMaxHold').value = p.hold;
+  document.getElementById('btCost').value = p.cost;
+}
+
 // Backtest: Period
 async function runBacktest() {
   let syms = document.getElementById('btSymbols').value.trim(); if(!syms) return;
@@ -670,11 +701,16 @@ async function runBacktest() {
     syms = await resolveSymbols(syms, 'kr');
   }
   const period = document.getElementById('btPeriod').value;
-  const sl = document.getElementById('btStopLoss').value.trim() || '-0.03';
-  const tp = document.getElementById('btTakeProfit').value.trim() || '0.07';
+  const sl = document.getElementById('btStopLoss').value || '-3';
+  const tp = document.getElementById('btTakeProfit').value || '7';
+  const maxHold = document.getElementById('btMaxHold').value || '5';
+  const cost = document.getElementById('btCost').value || '0.001';
   const grades = document.getElementById('btGrades').value;
-  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 백테스트 중 (최대 60초)...</div>';
-  const r = await fetch(API+`/api/backtest/period?symbols=${syms}&period=${period}&stop-loss=${sl}&take-profit=${tp}&grades=${grades}`);
+  // 퍼센트를 소수로 변환 (UI는 -3, API는 -0.03)
+  const slVal = parseFloat(sl) / 100;
+  const tpVal = parseFloat(tp) / 100;
+  panel.innerHTML = `<div class="loading"><span class="spinner"></span> 백테스트 중... (손절 ${sl}%, 익절 ${tp}%, 보유 ${maxHold}일, 수수료 ${(parseFloat(cost)*200).toFixed(1)}%)</div>`;
+  const r = await fetch(API+`/api/backtest/period?symbols=${syms}&period=${period}&stop-loss=${slVal}&take-profit=${tpVal}&max-hold=${maxHold}&grades=${grades}`);
   const data = await r.json();
   if (data.error) { panel.innerHTML = `<div class="loading">${data.error}</div>`; return; }
   const results = Array.isArray(data) ? data : [data];
