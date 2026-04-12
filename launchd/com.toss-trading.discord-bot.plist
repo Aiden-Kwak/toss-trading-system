@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.toss-trading.discord-bot</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- 본인 환경에 맞게 수정 -->
+        <string>/path/to/toss-trading-system/scripts/.venv/bin/python3</string>
+        <string>/path/to/toss-trading-system/scripts/discord-bot.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/toss-trading-system</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/toss-trading/discord-bot.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/toss-trading/discord-bot.error.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

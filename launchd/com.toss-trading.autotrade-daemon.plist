@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.toss-trading.autotrade-daemon</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- 본인 환경에 맞게 수정 -->
+        <string>/path/to/toss-trading-system/scripts/.venv/bin/python3</string>
+        <string>/path/to/toss-trading-system/scripts/autotrade-daemon.py</string>
+        <string>--market</string>
+        <string>us</string>
+        <string>--interval</string>
+        <string>300</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/toss-trading-system</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/toss-trading/autotrade-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/toss-trading/autotrade-daemon.error.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>

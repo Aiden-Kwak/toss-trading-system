@@ -210,14 +210,49 @@ python3 dashboard/server.py  # → http://localhost:8777
 | 주간 | 최근 7일 | 다운로드 가능 |
 | 월간 | 최근 30일 | 다운로드 가능 |
 
-## Discord 봇 (`discord-bot.py`)
+## Discord 연동
 
-채널에서 명령어를 입력하면 거래 정보 조회, 데몬 제어, 종목 스크리닝이 가능합니다.
+### 초기 설정
+
+#### 1. Discord Bot 생성
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) 접속
+2. **New Application** → 이름 입력 → Create
+3. 왼쪽 **Bot** 메뉴 → **Reset Token** → 토큰 복사 (한 번만 표시됨)
+4. 같은 페이지 **Privileged Gateway Intents** 에서 3개 모두 ON:
+   - `PRESENCE INTENT` / `SERVER MEMBERS INTENT` / `MESSAGE CONTENT INTENT`
+5. **Save Changes**
+
+#### 2. Bot을 서버에 초대
+
+1. 왼쪽 **OAuth2** → **URL Generator**
+2. SCOPES: `bot` 체크
+3. BOT PERMISSIONS: `Send Messages`, `Read Message History`, `Read Messages/View Channels` 체크
+4. 생성된 URL을 브라우저에 붙여넣기 → 서버 선택 → 승인
+
+#### 3. 환경변수 설정
 
 ```bash
-# 실행
+# 프로젝트 루트에 .env 파일 생성
+cat > .env << 'EOF'
+DISCORD_BOT_TOKEN=<위에서 복사한 봇 토큰>
+DISCORD_WEBHOOK_URL=<Discord 채널 설정 → 연동 → 웹훅 URL>
+EOF
+```
+
+#### 4. 의존성 설치 & 실행
+
+```bash
+# discord.py 설치 (프로젝트 venv에)
+.venv/bin/pip install discord.py
+
+# 봇 실행
 .venv/bin/python3 scripts/discord-bot.py
 ```
+
+### 봇 명령어 (`discord-bot.py`)
+
+채널에서 명령어를 입력하면 거래 정보 조회, 데몬 제어, 종목 스크리닝이 가능합니다.
 
 | 분류 | 명령어 | 설명 |
 |------|--------|------|
@@ -250,31 +285,46 @@ python3 dashboard/server.py  # → http://localhost:8777
 
 터미널 없이 Mac 부팅 시 자동 시작, 크래시 시 자동 재시작됩니다.
 
+### 설정
+
 ```bash
-# 서비스 등록
+# 1. 로그 디렉토리 생성
+mkdir -p ~/Library/Logs/toss-trading
+
+# 2. plist 파일 복사 (프로젝트에 포함)
+cp launchd/com.toss-trading.discord-bot.plist ~/Library/LaunchAgents/
+cp launchd/com.toss-trading.autotrade-daemon.plist ~/Library/LaunchAgents/
+
+# 3. plist 내 경로를 본인 환경에 맞게 수정
+#    - ProgramArguments의 python3 경로 (.venv/bin/python3)
+#    - WorkingDirectory
+#    - StandardOutPath / StandardErrorPath
+
+# 4. 서비스 등록
 launchctl load ~/Library/LaunchAgents/com.toss-trading.discord-bot.plist
 launchctl load ~/Library/LaunchAgents/com.toss-trading.autotrade-daemon.plist
+```
+
+### 관리
+
+```bash
+# 상태 확인
+launchctl list | grep toss-trading
 
 # 서비스 해제
 launchctl unload ~/Library/LaunchAgents/com.toss-trading.discord-bot.plist
 launchctl unload ~/Library/LaunchAgents/com.toss-trading.autotrade-daemon.plist
 
-# 상태 확인
-launchctl list | grep toss-trading
-
-# 로그
+# 로그 확인
 tail -f ~/Library/Logs/toss-trading/discord-bot.log
 tail -f ~/Library/Logs/toss-trading/autotrade-daemon.log
 ```
 
-### 환경변수 (`.env`)
-
-```bash
-DISCORD_BOT_TOKEN=<봇 토큰>
-DISCORD_WEBHOOK_URL=<웹훅 URL>
-```
-
-`.env` 파일은 프로젝트 루트에 위치하며, `notify.py`와 `discord-bot.py`가 자동 로드합니다.
+| 설정 | 내용 |
+|------|------|
+| `RunAtLoad` | 부팅 시 자동 시작 |
+| `KeepAlive` | 크래시 시 자동 재시작 |
+| `PYTHONUNBUFFERED=1` | 로그 실시간 출력 |
 
 ## Claude Code 스킬
 
