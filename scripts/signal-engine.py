@@ -269,30 +269,25 @@ def compute_alphas(quote: dict) -> dict:
 # ─── 매수 시그널 평가 ───
 
 def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
-    """종목의 매수 적합성을 점수(0-130)로 평가합니다.
+    """종목의 매수 적합성을 점수(0-100)로 평가합니다.
+
+    v2 재설계: "오늘 사야 하는가"를 판단하는 타이밍 시그널 중심.
+    기존 문제: 대형주가 항상 A등급 → 매일 매수 → 단타가 아님.
 
     평가 항목:
-    - 거래량 스파이크 (0-30점)
-    - 일일 모멘텀 (0-25점)
-    - 가격 위치 (0-25점)
-    - 포트폴리오 적합성 (0-20점)
-    - 101 Alphas 점수 (0-30점) ← NEW
+    - 방향성 시그널 (0-30점): 알파들이 같은 방향을 가리키는가
+    - 모멘텀 품질 (0-25점): 단순 등락이 아닌 방향의 질
+    - 가격 액션 (0-20점): 캔들 형태, 위치
+    - 시장 컨텍스트 (0-25점): 시장 상황 + 추세 필터
 
-    Returns:
-        dict: {"symbol", "score", "grade", "breakdown", "recommendation", "alphas"}
+    여력은 점수가 아닌 gate check (리스크 게이트에서 처리)
     """
-    volume_spike_ratio = config.get("volume_spike_ratio", DEFAULT_CONFIG["volume_spike_ratio"])
-    momentum_threshold = config.get("momentum_threshold", DEFAULT_CONFIG["momentum_threshold"])
-
     symbol = quote.get("symbol", "")
     change_rate = quote.get("change_rate", 0)
     volume = quote.get("volume", 0)
     last_price = quote.get("last", 0)
     ref_price = quote.get("reference_price", 0)
 
-    # 시장 판별: 한국주식 vs 미국주식
-    # - market_code: KSP(코스피), KSQ(코스닥) → 한국 / NSQ, NYS 등 → 미국
-    # - symbol이 숫자로만 구성 또는 A로 시작하는 6-7자리 → 한국
     market_code = quote.get("market_code", "")
     is_kr = (
         market_code in ("KSP", "KSQ") or
@@ -301,184 +296,111 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
     )
     market_label = "KR" if is_kr else "US"
 
+    # 알파 계산
+    alphas = compute_alphas(quote)
+    a101 = alphas.get("alpha101", {}).get("value", 0) if isinstance(alphas.get("alpha101"), dict) else 0
+    a33 = alphas.get("alpha33", {}).get("value", 0) if isinstance(alphas.get("alpha33"), dict) else 0
+    a54 = alphas.get("alpha54", {}).get("value", 0) if isinstance(alphas.get("alpha54"), dict) else 0
+    momentum_val = alphas.get("momentum", {}).get("value", 0) if isinstance(alphas.get("momentum"), dict) else 0
+    mean_rev_val = alphas.get("mean_reversion", {}).get("value", 0) if isinstance(alphas.get("mean_reversion"), dict) else 0
+
     breakdown = {}
     total_score = 0
 
-    # 1. 거래량 점수 (0-30) — 시장별 기준 분리
-    #
-    # 미국: 대형주 중심, 일 거래량 수천만~수억주
-    #   50M+→30  20M+→25  10M+→20  5M+→15  1M+→10
-    #
-    # 한국: 중소형주도 단타 대상, 거래량 자체가 적음
-    #   - 코스피 대형주: 일 500만주면 활발
-    #   - 코스닥 중소형: 일 100만주면 활발, 300만주면 폭발적
-    #   5M+→30  3M+→25  1M+→20  500K+→15  100K+→10
+    # ─── 1. 방향성 시그널 (0-30점) ───
+    # 핵심: 여러 알파가 동시에 "매수"를 가리킬 때만 높은 점수
+    # 알파 동의 카운트: 양수 알파가 몇 개인지
+    bullish_count = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v > 0.05)
+    bearish_count = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v < -0.05)
+
+    if bullish_count >= 4:
+        direction_score = 30  # 모든 알파 동의 → 강한 매수
+    elif bullish_count >= 3:
+        direction_score = 22  # 3개 동의
+    elif bullish_count >= 2:
+        direction_score = 12  # 2개 동의 (약한 시그널)
+    elif bearish_count >= 3:
+        direction_score = 0   # 대부분 매도 시그널 → 진입 금지
+    else:
+        direction_score = 5   # 혼재 → 불확실
+    breakdown["direction"] = {"score": direction_score, "max": 30, "bullish": bullish_count, "bearish": bearish_count}
+    total_score += direction_score
+
+    # ─── 2. 모멘텀 품질 (0-25점) ───
+    # 단순 등락률이 아닌: 방향 + 강도 + 거래량 동반 여부
+    abs_change = abs(change_rate)
+
     if is_kr:
-        if volume >= 5_000_000:
-            vol_score = 30
-        elif volume >= 3_000_000:
-            vol_score = 25
-        elif volume >= 1_000_000:
-            vol_score = 20
-        elif volume >= 500_000:
-            vol_score = 15
-        elif volume >= 100_000:
-            vol_score = 10
-        else:
-            vol_score = 5
+        sweet_spot = 0.02 <= abs_change <= 0.08  # 한국: 2-8%가 적정
+        too_hot = abs_change > 0.15
     else:
-        if volume >= 50_000_000:
-            vol_score = 30
-        elif volume >= 20_000_000:
-            vol_score = 25
-        elif volume >= 10_000_000:
-            vol_score = 20
-        elif volume >= 5_000_000:
-            vol_score = 15
-        elif volume >= 1_000_000:
-            vol_score = 10
-        else:
-            vol_score = 5
-    breakdown["volume"] = {"score": vol_score, "max": 30, "value": volume, "market": market_label}
-    total_score += vol_score
+        sweet_spot = 0.015 <= abs_change <= 0.05  # 미국: 1.5-5%가 적정
+        too_hot = abs_change > 0.10
 
-    # 2. 모멘텀 점수 (0-25) — 시장별 기준 분리
-    #
-    # 미국: 일일 가격제한 없음. 10%+ 상승은 과열.
-    #   +1~5%→25  +5~10%→15  +10%+→5(과열)
-    #
-    # 한국: 가격제한 ±30%. 테마주는 10-15% 상승이 흔함.
-    #   10%+ 상승도 정상적인 모멘텀일 수 있음.
-    #   +1~8%→25  +8~15%→20  +15~25%→15  +25%+→5(상한가 근접 과열)
-    if is_kr:
-        if 0.01 <= change_rate <= 0.08:
-            mom_score = 25  # 적당한 상승
-        elif 0.08 < change_rate <= 0.15:
-            mom_score = 20  # 강한 상승 (한국에선 정상 범위)
-        elif 0.15 < change_rate <= 0.25:
-            mom_score = 15  # 급등 (테마주 가능성)
-        elif change_rate > 0.25:
-            mom_score = 5   # 상한가 근접 (과열)
-        elif -0.03 <= change_rate < 0.01:
-            mom_score = 15  # 보합/소폭 하락
-        elif -0.08 <= change_rate < -0.03:
-            mom_score = 10  # 하락 중
-        else:
-            mom_score = 0   # 급락 (-8% 이하)
+    if change_rate > 0 and sweet_spot:
+        mom_quality = 25  # 적정 상승
+    elif change_rate > 0 and not too_hot:
+        mom_quality = 15  # 상승이지만 약하거나 과열 직전
+    elif too_hot:
+        mom_quality = 0   # 과열 (고점 추격 위험)
+    elif abs_change < 0.005:
+        mom_quality = 0   # 보합 (방향 없음 → 진입 이유 없음)
+    elif change_rate < 0 and abs_change < 0.03:
+        mom_quality = 5   # 소폭 하락 (평균회귀 기회 가능)
     else:
-        if 0.01 <= change_rate <= 0.05:
-            mom_score = 25
-        elif 0.05 < change_rate <= 0.10:
-            mom_score = 15
-        elif change_rate > 0.10:
-            mom_score = 5
-        elif -0.02 <= change_rate < 0.01:
-            mom_score = 15
-        elif -0.05 <= change_rate < -0.02:
-            mom_score = 10
-        else:
-            mom_score = 0
-    breakdown["momentum"] = {"score": mom_score, "max": 25, "value": round(change_rate * 100, 2), "market": market_label}
-    total_score += mom_score
+        mom_quality = 0   # 하락
+    breakdown["momentum"] = {"score": mom_quality, "max": 25, "change_rate": round(change_rate * 100, 2), "market": market_label}
+    total_score += mom_quality
 
-    # 3. 가격 위치 점수 (0-25) — 시장별 기준 분리
-    #
-    # 미국: 변동폭 작음. 전일比 ±2%가 보합, 5%+가 큰 움직임
-    # 한국: 변동폭 큼. 전일比 ±3%가 보합, 10%+가 큰 움직임
-    #   한국에서 +8% 진입은 미국의 +3% 진입과 비슷한 위험도
-    if ref_price > 0:
-        price_vs_ref = (last_price - ref_price) / ref_price
-        if is_kr:
-            if -0.03 <= price_vs_ref <= 0.03:
-                price_score = 20  # 전일 근처 (안정적)
-            elif 0.03 < price_vs_ref <= 0.08:
-                price_score = 15  # 소폭 위
-            elif 0.08 < price_vs_ref <= 0.15:
-                price_score = 10  # 위 (추격 주의)
-            elif price_vs_ref > 0.15:
-                price_score = 5   # 크게 위 (추격 매수 위험)
-            elif -0.08 <= price_vs_ref < -0.03:
-                price_score = 25  # 소폭 아래 (매수 기회)
-            else:
-                price_score = 10  # 크게 아래 (추가 하락 위험)
-        else:
-            if -0.02 <= price_vs_ref <= 0.02:
-                price_score = 20
-            elif 0.02 < price_vs_ref <= 0.05:
-                price_score = 15
-            elif price_vs_ref > 0.05:
-                price_score = 5
-            elif -0.05 <= price_vs_ref < -0.02:
-                price_score = 25
-            else:
-                price_score = 10
+    # ─── 3. 가격 액션 (0-20점) ───
+    # Alpha#101 (방향 강도) + Alpha#54 (가격 위치) 조합
+    # 강한 양봉(a101>0.5) + 고가 마감(a54>0.7) = 최고 점수
+    if a101 > 0.5 and a54 > 0.7:
+        action_score = 20  # 강한 양봉 + 고가 마감
+    elif a101 > 0.3 and a54 > 0.5:
+        action_score = 15  # 양봉 + 중상위 마감
+    elif a101 > 0 and a54 > 0.4:
+        action_score = 10  # 약한 양봉
+    elif a101 < -0.3:
+        action_score = 0   # 음봉 → 진입 금지
     else:
-        price_score = 10
-    breakdown["price_position"] = {"score": price_score, "max": 25, "value": round(last_price, 2), "market": market_label}
-    total_score += price_score
+        action_score = 5   # 도지/불확실
+    breakdown["price_action"] = {"score": action_score, "max": 20, "alpha101": round(a101, 3), "alpha54": round(a54, 3)}
+    total_score += action_score
 
-    # 4. 포트폴리오 적합성 (0-20) — 주문가능금액 기준
-    orderable = portfolio.get("orderable_amount_krw", 0)
-
-    # 현재가 기준 최소 1주 매수 가능한지
-    if last_price > 0 and orderable >= last_price:
-        # 몇 주나 살 수 있는지로 점수
-        buyable_qty = orderable / last_price
-        if buyable_qty >= 5:
-            port_score = 20  # 5주 이상 가능
-        elif buyable_qty >= 2:
-            port_score = 15  # 2~4주
-        elif buyable_qty >= 1:
-            port_score = 10  # 1주만 가능
-        else:
-            port_score = 0
-    elif orderable > 0:
-        port_score = 5  # 돈은 있지만 1주도 못 삼
-    else:
-        port_score = 0   # 주문가능금액 0
-    breakdown["portfolio_fit"] = {"score": port_score, "max": 20, "value": orderable}
-    total_score += port_score
-
-    # 5. 101 Alphas 점수 (0-30) — Kakushadze (2016)
-    alphas = compute_alphas(quote)
-    alpha_score = alphas["composite_score"]
-    breakdown["alphas"] = {"score": round(alpha_score), "max": 30, "detail": alphas}
-    total_score += alpha_score
-
-    # 6. 시장 상황 보정 (-10 ~ +10점)
+    # ─── 4. 시장 컨텍스트 (0-25점) ───
     regime = detect_market_regime(quote)
-    regime_adj = 0
-    if regime == "bull":
-        regime_adj = 5    # 상승장 가점
-    elif regime == "bear":
-        regime_adj = -10  # 하락장 감점 (진입 억제)
-    elif regime == "crisis":
-        regime_adj = -15  # 위기 시 대폭 감점
-    # range = 0 (중립)
-    total_score += regime_adj
-    total_score = max(0, total_score)
-    breakdown["regime"] = {"adjustment": regime_adj, "regime": regime}
-
-    # 7. 추세 필터 (평균회귀 보호)
-    # 모멘텀 알파가 음수(하락추세)인데 평균회귀 알파가 양수(반등 기대)면 경고
-    momentum_val = alphas.get("momentum", {}).get("value", 0) if isinstance(alphas.get("momentum"), dict) else 0
-    mean_rev_val = alphas.get("mean_reversion", {}).get("value", 0) if isinstance(alphas.get("mean_reversion"), dict) else 0
     trend_warning = None
-    if momentum_val < -0.02 and mean_rev_val > 0.01:
-        trend_warning = "하락추세 내 반등 매수 주의 (falling knife 위험)"
-        total_score -= 5  # 추가 감점
-        total_score = max(0, total_score)
-    breakdown["trend_filter"] = {"warning": trend_warning, "momentum": round(momentum_val, 4)}
 
-    # 등급 (130점 + 보정 기준)
-    pct = total_score / 130 * 100
-    if pct >= 70:
+    # 시장 상황
+    if regime == "bull":
+        context_score = 20
+    elif regime == "range":
+        context_score = 10  # 보합 → 중립 (기존엔 모두 여기에 빠져서 높았음)
+    elif regime == "bear":
+        context_score = 0   # 하락 → 진입 금지
+    else:  # crisis
+        context_score = 0
+
+    # 추세 필터: 하락추세 내 반등 매수 방지
+    if momentum_val < -0.02 and mean_rev_val > 0.01:
+        trend_warning = "하락추세 내 반등 매수 주의 (falling knife)"
+        context_score = max(0, context_score - 10)
+
+    breakdown["context"] = {"score": context_score, "max": 25, "regime": regime, "trend_warning": trend_warning}
+    total_score += context_score
+
+    # ─── 등급 산정 (100점 만점) ───
+    total_score = max(0, total_score)
+    pct = total_score / 100 * 100  # 이미 100점 만점이라 pct = total
+
+    if pct >= 75:
         grade = "A"
         recommendation = "STRONG_BUY"
     elif pct >= 55:
         grade = "B"
         recommendation = "BUY"
-    elif pct >= 40:
+    elif pct >= 35:
         grade = "C"
         recommendation = "WATCH"
     else:
@@ -489,7 +411,7 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
         "symbol": symbol,
         "name": quote.get("name", ""),
         "score": round(total_score, 1),
-        "max_score": 130,
+        "max_score": 100,
         "score_pct": round(pct, 1),
         "grade": grade,
         "recommendation": recommendation,
