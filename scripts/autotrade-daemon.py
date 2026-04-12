@@ -720,6 +720,17 @@ def main():
                 run_script("notify.py", "report", "--type", "daily")
             _last_market_open = currently_open
 
+            # config에서 모드 동적 반영 (Discord 봇에서 전환 가능)
+            cfg_mode = config.get("trade_mode")
+            if cfg_mode in ("live", "dry-run"):
+                new_dry = cfg_mode == "dry-run"
+                if new_dry != dry_run:
+                    dry_run = new_dry
+                    os.environ["TOSS_TRADE_MODE"] = cfg_mode
+                    log(f"  모드 전환: {'DRY RUN' if dry_run else 'LIVE'}")
+                    run_script("notify.py", "daemon", "--status", "running",
+                                "--detail", f"모드 전환: {'DRY RUN' if dry_run else 'LIVE'}")
+
             ok = run_cycle(state, config, dry_run, market)
             state.save()
 

@@ -42,7 +42,21 @@ TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 CONFIG_DIR = Path.home() / "Library/Application Support/tossctl"
 LOG_FILE = CONFIG_DIR / "trade-log.json"
 DAEMON_STATE_FILE = CONFIG_DIR / "daemon-state.json"
+SIGNAL_CONFIG = CONFIG_DIR / "signal-config.json"
 SCRIPTS_DIR = Path(__file__).parent
+
+HOME = Path.home()
+_default_bin = HOME / "Desktop/Personal/Stock/tossinvest-cli/bin/tossctl"
+_default_helper = HOME / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"
+TOSS_BIN = Path(os.environ.get("TOSSCTL_BIN", str(_default_bin)))
+TOSS_HELPER_DIR = os.environ.get("TOSSCTL_AUTH_HELPER_DIR", str(_default_helper))
+TOSS_HELPER_PY = os.environ.get("TOSSCTL_AUTH_HELPER_PYTHON", str(Path(TOSS_HELPER_DIR) / ".venv/bin/python3"))
+TOSS_ENV = {
+    **os.environ,
+    "PATH": f"{TOSS_BIN.parent}:{os.environ.get('PATH', '')}",
+    "TOSSCTL_AUTH_HELPER_DIR": TOSS_HELPER_DIR,
+    "TOSSCTL_AUTH_HELPER_PYTHON": TOSS_HELPER_PY,
+}
 
 # 색상
 GREEN = 0x22c55e
@@ -84,6 +98,12 @@ def cmd_help() -> discord.Embed:
         "`!today` — 오늘 거래 요약",
         "`!status` — 데몬 상태",
         "`!report` — 일일 보고서 전송",
+        "`!scan [watchlist|auto|all]` — 종목 스크리닝 (등급/점수)",
+        "",
+        "**제어 명령:**",
+        "`!mode live|dry-run` — 거래 모드 전환",
+        "`!daemon start|stop` — 데몬 시작/종료",
+        "`!login` — 토스증권 세션 갱신",
         "",
         "**기타:**",
         "`!ping` — 봇 응답 테스트",
@@ -252,6 +272,255 @@ def cmd_report() -> discord.Embed:
                              color=RED).set_footer(**footer())
 
 
+# ─── 스크리너 ───
+
+def cmd_scan(source: str = "watchlist") -> list[discord.Embed]:
+    """종목 스크리닝 실행 후 결과를 Discord에 전송"""
+    try:
+        r = subprocess.run(
+            ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "scan", "--source", source],
+            capture_output=True, text=True, timeout=60, env=TOSS_ENV
+        )
+        if r.returncode != 0:
+            return [discord.Embed(title="🔍 스크리너 오류", description=f"실행 실패:\n```{r.stderr[:300]}```",
+                                   color=RED).set_footer(**footer())]
+
+        data = json.loads(r.stdout)
+    except subprocess.TimeoutExpired:
+        return [discord.Embed(title="🔍 스크리너 오류", description="타임아웃 (60초 초과)",
+                               color=RED).set_footer(**footer())]
+    except Exception as e:
+        return [discord.Embed(title="🔍 스크리너 오류", description=str(e)[:300],
+                               color=RED).set_footer(**footer())]
+
+    summary = data.get("summary", {})
+    sources = ", ".join(data.get("sources", []))
+    embeds = []
+
+    # 요약 embed
+    overview = discord.Embed(
+        title=f"🔍 종목 스크리닝 결과",
+        description=(
+            f"**소스**: {sources}\n"
+            f"**스캔**: {data.get('total_scanned', 0)}종목 → **채점**: {data.get('total_scored', 0)}종목\n\n"
+            f"🟢 매수 후보 (A/B): **{summary.get('buy', 0)}**건\n"
+            f"🟡 관찰 (C): **{summary.get('watch', 0)}**건\n"
+            f"⚪ 스킵 (D): **{summary.get('skip', 0)}**건"
+        ),
+        color=GREEN if summary.get("buy", 0) > 0 else PURPLE
+    ).set_footer(**footer())
+    embeds.append(overview)
+
+    # 매수 후보 상세
+    buy_list = data.get("buy_candidates", [])
+    if buy_list:
+        desc = ""
+        for c in buy_list[:10]:
+            sym = c.get("symbol", "?")
+            name = c.get("name", "")
+            grade = c.get("grade", "?")
+            score = c.get("score_pct", c.get("score", 0))
+            price = c.get("current_price", 0)
+            rec = c.get("recommendation", "")
+
+            grade_icon = "🅰️" if grade == "A" else "🅱️"
+            desc += f"{grade_icon} **{sym}**"
+            if name:
+                desc += f" ({name})"
+            desc += f"\n  점수: **{score:.0f}** | 현재가: {price:,.2f}"
+            if rec:
+                desc += f"\n  추천: {rec}"
+            desc += "\n\n"
+
+        buy_embed = discord.Embed(
+            title=f"🟢 매수 후보 ({len(buy_list)}건)",
+            description=desc[:4000],
+            color=GREEN
+        ).set_footer(**footer())
+        embeds.append(buy_embed)
+
+    # 관찰 종목
+    watch_list = data.get("watch_list", [])
+    if watch_list:
+        desc = ""
+        for c in watch_list[:10]:
+            sym = c.get("symbol", "?")
+            name = c.get("name", "")
+            score = c.get("score_pct", c.get("score", 0))
+            desc += f"🟡 **{sym}**"
+            if name:
+                desc += f" ({name})"
+            desc += f" — 점수: {score:.0f}\n"
+
+        watch_embed = discord.Embed(
+            title=f"🟡 관찰 종목 ({len(watch_list)}건)",
+            description=desc[:4000],
+            color=YELLOW
+        ).set_footer(**footer())
+        embeds.append(watch_embed)
+
+    if not buy_list and not watch_list:
+        embeds.append(discord.Embed(
+            description="매수 후보 및 관찰 종목이 없습니다.",
+            color=PURPLE
+        ).set_footer(**footer()))
+
+    return embeds
+
+
+# ─── 제어 명령 ───
+
+def cmd_mode(new_mode: str) -> discord.Embed:
+    """live/dry-run 모드 전환 — signal-config.json에 기록, 데몬이 다음 사이클에 반영"""
+    if new_mode not in ("live", "dry-run"):
+        return discord.Embed(
+            title="⚙️ 모드 전환",
+            description="사용법: `!mode live` 또는 `!mode dry-run`",
+            color=YELLOW
+        ).set_footer(**footer())
+
+    # signal-config.json 업데이트
+    config = {}
+    if SIGNAL_CONFIG.exists():
+        try:
+            config = json.loads(SIGNAL_CONFIG.read_text())
+        except Exception:
+            pass
+
+    old_mode = config.get("trade_mode", "live")
+    config["trade_mode"] = new_mode
+    SIGNAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    SIGNAL_CONFIG.write_text(json.dumps(config, ensure_ascii=False, indent=2))
+
+    if old_mode == new_mode:
+        desc = f"이미 **{new_mode.upper()}** 모드입니다."
+        color = PURPLE
+    else:
+        desc = f"**{old_mode.upper()}** → **{new_mode.upper()}**\n다음 사이클부터 적용됩니다."
+        color = GREEN if new_mode == "live" else BLUE
+
+    return discord.Embed(title="⚙️ 모드 전환", description=desc, color=color).set_footer(**footer())
+
+
+def _is_daemon_running() -> bool:
+    try:
+        ps = subprocess.run(["pgrep", "-f", "autotrade-daemon"], capture_output=True, text=True)
+        return ps.returncode == 0
+    except Exception:
+        return False
+
+
+async def cmd_daemon_control(action: str, args: list) -> discord.Embed:
+    """데몬 시작/종료"""
+    if action == "start":
+        if _is_daemon_running():
+            return discord.Embed(
+                title="🤖 데몬 제어",
+                description="데몬이 이미 실행 중입니다.\n중지 후 재시작하려면: `!daemon stop` → `!daemon start`",
+                color=YELLOW
+            ).set_footer(**footer())
+
+        # 옵션 파싱
+        market = "us"
+        interval = "300"
+        dry_run = False
+        for i, a in enumerate(args):
+            if a == "--market" and i + 1 < len(args):
+                market = args[i + 1]
+            elif a == "--interval" and i + 1 < len(args):
+                interval = args[i + 1]
+            elif a == "--dry-run":
+                dry_run = True
+
+        # config에서 모드 확인
+        if SIGNAL_CONFIG.exists():
+            try:
+                cfg = json.loads(SIGNAL_CONFIG.read_text())
+                if cfg.get("trade_mode") == "dry-run":
+                    dry_run = True
+            except Exception:
+                pass
+
+        cmd_args = ["python3", str(SCRIPTS_DIR / "autotrade-daemon.py"),
+                     "--market", market, "--interval", interval]
+        if dry_run:
+            cmd_args.append("--dry-run")
+
+        subprocess.Popen(cmd_args, stdout=open(CONFIG_DIR / "daemon.log", "a"),
+                         stderr=subprocess.STDOUT, start_new_session=True)
+
+        mode_label = "DRY RUN" if dry_run else "LIVE"
+        return discord.Embed(
+            title="🟢 데몬 시작",
+            description=f"**모드**: {mode_label}\n**시장**: {market.upper()}\n**간격**: {interval}초",
+            color=GREEN
+        ).set_footer(**footer())
+
+    elif action == "stop":
+        if not _is_daemon_running():
+            return discord.Embed(
+                title="🤖 데몬 제어",
+                description="실행 중인 데몬이 없습니다.",
+                color=YELLOW
+            ).set_footer(**footer())
+
+        subprocess.run(["pkill", "-f", "autotrade-daemon"], capture_output=True)
+        return discord.Embed(
+            title="⬛ 데몬 종료",
+            description="데몬 프로세스를 종료했습니다.",
+            color=RED
+        ).set_footer(**footer())
+
+    else:
+        return discord.Embed(
+            title="🤖 데몬 제어",
+            description="사용법:\n`!daemon start [--market us|kr] [--interval 300] [--dry-run]`\n`!daemon stop`",
+            color=YELLOW
+        ).set_footer(**footer())
+
+
+def cmd_login() -> discord.Embed:
+    """토스증권 세션 갱신 시도"""
+    # 1) 현재 세션 상태 확인
+    try:
+        r = subprocess.run(
+            [str(TOSS_BIN), "auth", "status", "--output", "json"],
+            capture_output=True, text=True, timeout=10, env=TOSS_ENV
+        )
+        if r.returncode == 0:
+            status = json.loads(r.stdout)
+            if status.get("valid") or status.get("active") or "active" in str(status):
+                return discord.Embed(
+                    title="🟢 세션 상태",
+                    description="세션이 이미 유효합니다. 재로그인이 필요 없습니다.",
+                    color=GREEN
+                ).set_footer(**footer())
+    except Exception:
+        pass
+
+    # 2) 세션 갱신 시도 (auth refresh)
+    try:
+        r = subprocess.run(
+            [str(TOSS_BIN), "auth", "refresh", "--output", "json"],
+            capture_output=True, text=True, timeout=15, env=TOSS_ENV
+        )
+        if r.returncode == 0:
+            return discord.Embed(
+                title="🟢 세션 갱신 성공",
+                description="토스증권 세션이 갱신되었습니다.",
+                color=GREEN
+            ).set_footer(**footer())
+    except Exception:
+        pass
+
+    # 3) 자동 갱신 실패 → 수동 안내
+    return discord.Embed(
+        title="🔴 세션 갱신 실패",
+        description="자동 갱신에 실패했습니다.\n터미널에서 직접 로그인해주세요:\n```\ntossctl auth login\n```",
+        color=RED
+    ).set_footer(**footer())
+
+
 # ─── Bot 실행 ───
 
 intents = discord.Intents.default()
@@ -290,6 +559,19 @@ async def on_message(message: discord.Message):
         await message.channel.send(embed=cmd_status())
     elif cmd == "report":
         await message.channel.send(embed=cmd_report())
+    elif cmd == "scan":
+        source = parts[1].lower() if len(parts) > 1 else "watchlist"
+        embeds = cmd_scan(source)
+        for embed in embeds:
+            await message.channel.send(embed=embed)
+    elif cmd == "mode":
+        mode_arg = parts[1].lower() if len(parts) > 1 else ""
+        await message.channel.send(embed=cmd_mode(mode_arg))
+    elif cmd == "daemon":
+        action = parts[1].lower() if len(parts) > 1 else ""
+        await message.channel.send(embed=await cmd_daemon_control(action, parts[2:]))
+    elif cmd == "login":
+        await message.channel.send(embed=cmd_login())
     elif cmd == "ping":
         await message.channel.send(embed=discord.Embed(
             title="🏓 Pong!",
