@@ -1,0 +1,16 @@
+{
+  "updated_at": "2026-04-12",
+  "us": [
+    "TSLA", "NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "AMD",
+    "NFLX", "PLTR", "COIN", "MARA", "RIOT", "SOFI", "NIO", "BABA",
+    "SQ", "SHOP", "UBER", "SNAP", "PINS", "RBLX", "DKNG", "CRWD",
+    "NET", "SNOW", "ENPH", "RIVN", "LCID", "HOOD", "AFRM", "UPST",
+    "SPY", "QQQ", "VOO", "IWM", "ARKK", "SOXL", "TQQQ"
+  ],
+  "kr": [
+    "005930.KS", "000660.KS", "035420.KS", "035720.KS", "051910.KS",
+    "006400.KS", "003670.KS", "105560.KS", "032830.KS", "012330.KS",
+    "247540.KS", "352820.KS", "003490.KS", "028260.KS", "066570.KS",
+    "055550.KS", "096770.KS", "034730.KS", "086790.KS", "033780.KS"
+  ]
+}

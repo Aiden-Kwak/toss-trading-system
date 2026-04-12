@@ -128,7 +128,8 @@ def check_positions(positions: list, config: dict) -> list:
             signal["urgency"] = "HIGH"
             signals.append(signal)
 
-        # 트레일링 스톱: 수익이 trigger 이상 찍었다가 distance만큼 하락
+        # 트레일링 스톱 (근사): 수익 trigger 이상 + 당일 distance 이상 하락
+        # 참고: 데몬/시뮬레이터는 고점 대비 하락으로 더 정밀하게 체크
         elif profit_rate >= trailing_trigger and daily_rate <= -trailing_dist:
             signal["action"] = "SELL_TRAILING_STOP"
             signal["reason"] = f"트레일링 스톱: 수익 {profit_rate*100:.1f}%에서 당일 -{abs(daily_rate)*100:.1f}% 하락"

@@ -364,6 +364,12 @@ def run_backtest(
         # 포지션 없고 시그널 발생 → 다음 날 매수 예약
         if not in_position and not pending_entry:
             if grade in entry_grades:
+                # 다일 추세 필터: 최근 5일 중 4일 이상 하락이면 진입 금지
+                if i >= 5:
+                    down_days = sum(1 for j in range(i-4, i+1) if df.iloc[j]["Close"] < df.iloc[j-1]["Close"])
+                    if down_days >= 4:
+                        continue  # 5일 중 4일+ 하락 → 강한 하락 추세 → 진입 금지
+
                 pending_entry = {
                     "date": date_str,
                     "grade": grade,

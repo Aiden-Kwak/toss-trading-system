@@ -30,12 +30,18 @@ PROTECTED_FILE = CONFIG_DIR / "protected-stocks.json"
 WATCHLIST_FILE = CONFIG_DIR / "watchlist.json"
 DAEMON_STATE_FILE = CONFIG_DIR / "daemon-state.json"
 
-TOSS_BIN = HOME / "Desktop/Personal/Stock/tossinvest-cli/bin/tossctl"
+# 경로: 환경변수 우선, 없으면 기본값 사용
+_default_bin = HOME / "Desktop/Personal/Stock/tossinvest-cli/bin/tossctl"
+_default_helper = HOME / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"
+TOSS_BIN = Path(os.environ.get("TOSSCTL_BIN", str(_default_bin)))
+TOSS_HELPER_DIR = os.environ.get("TOSSCTL_AUTH_HELPER_DIR", str(_default_helper))
+TOSS_HELPER_PY = os.environ.get("TOSSCTL_AUTH_HELPER_PYTHON", str(Path(TOSS_HELPER_DIR) / ".venv/bin/python3"))
+
 TOSS_ENV = {
     **os.environ,
     "PATH": f"{TOSS_BIN.parent}:{os.environ.get('PATH', '')}",
-    "TOSSCTL_AUTH_HELPER_DIR": str(HOME / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"),
-    "TOSSCTL_AUTH_HELPER_PYTHON": str(HOME / "Desktop/Personal/Stock/tossinvest-cli/auth-helper/.venv/bin/python3"),
+    "TOSSCTL_AUTH_HELPER_DIR": TOSS_HELPER_DIR,
+    "TOSSCTL_AUTH_HELPER_PYTHON": TOSS_HELPER_PY,
 }
 
 
@@ -181,16 +187,24 @@ def send_notification(title: str, msg: str):
 
 
 def is_market_open(market: str = "us") -> bool:
-    """장 시간인지 확인 (대략적)"""
-    now = datetime.now()
-    hour = now.hour
+    """장 시간인지 확인 (KST 기준 명시)"""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+    except ImportError:
+        now = datetime.now()  # 폴백: 시스템 시간 (KST 가정)
+
+    hour, minute = now.hour, now.minute
     weekday = now.weekday()
     if weekday >= 5:  # 주말
         return False
     if market == "kr":
-        return 9 <= hour < 15 or (hour == 15 and now.minute <= 30)
-    else:  # us (한국시간 기준)
-        return hour >= 22 or hour < 6  # 대략적 (서머타임 변동 있음)
+        # 코스피/코스닥: 09:00~15:30 KST
+        return 9 <= hour < 15 or (hour == 15 and minute <= 30)
+    else:
+        # US: 22:30~05:00 KST (겨울) / 21:30~04:00 KST (서머타임)
+        # 넉넉하게 21:00~06:00으로 설정
+        return hour >= 21 or hour < 6
 
 
 # ─── 핵심 사이클 ───
@@ -318,12 +332,15 @@ def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run
 
     if result.returncode == 0:
         log(f"  BUY SUCCESS: {symbol}")
-        run_script("trade-logger.py", "log",
+        log_result = run_script("trade-logger.py", "log",
                     "--symbol", symbol, "--side", "buy",
                     "--qty", str(qty), "--price", str(price),
                     "--grade", grade, "--score", str(score),
                     "--reason", reason or "autotrade",
                     "--mode", "autotrade")
+        if isinstance(log_result, dict) and log_result.get("_error"):
+            state.record_error(f"BUY {symbol} 성공했지만 기록 실패: {log_result['_error']}")
+            send_notification("기록 오류", f"{symbol} 매수 기록 실패 - 수동 확인 필요")
         state.today_trades += 1
         return True
     else:
@@ -367,10 +384,12 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool) -
         exit_reason = signal.get("action", "MANUAL")
 
         # 거래 기록
-        run_script("trade-logger.py", "close",
+        close_result = run_script("trade-logger.py", "close",
                     "--symbol", symbol,
                     "--exit-price", str(price),
                     "--exit-reason", exit_reason)
+        if isinstance(close_result, dict) and close_result.get("_error"):
+            state.record_error(f"SELL {symbol} 성공했지만 기록 실패: {close_result['_error']}")
 
         # 자동 교훈 생성
         auto_lesson = _generate_auto_lesson(symbol, pnl, exit_reason, signal)

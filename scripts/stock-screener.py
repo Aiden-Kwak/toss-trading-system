@@ -126,25 +126,22 @@ def screen_auto(market: str = "us", top_n: int = 20) -> list:
     if not HAS_YF:
         return []
 
-    # 스크리닝 대상 유니버스
-    if market.lower() == "us":
-        universe = [
-            "TSLA", "NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "AMD",
-            "NFLX", "PLTR", "COIN", "MARA", "RIOT", "SOFI", "NIO", "BABA",
-            "SQ", "SHOP", "UBER", "SNAP", "PINS", "RBLX", "DKNG", "CRWD",
-            "NET", "SNOW", "ENPH", "RIVN", "LCID", "HOOD", "AFRM", "UPST",
-            "SPY", "QQQ", "VOO", "IWM", "ARKK", "SOXL", "TQQQ",
-        ]
-    elif market.lower() == "kr":
-        # 한국주식은 야후 코드로
-        universe = [
-            "005930.KS", "000660.KS", "035420.KS", "035720.KS", "051910.KS",
-            "006400.KS", "003670.KS", "105560.KS", "032830.KS", "012330.KS",
-            "247540.KS", "352820.KS", "003490.KS", "028260.KS", "066570.KS",
-            "055550.KS", "096770.KS", "034730.KS", "086790.KS", "033780.KS",
-        ]
+    # 스크리닝 유니버스: 외부 파일에서 로드
+    universe_file = Path(__file__).parent.parent / "screener-universe.json"
+    if universe_file.exists():
+        try:
+            udata = json.loads(universe_file.read_text())
+            universe = udata.get(market.lower(), [])
+        except Exception:
+            universe = []
     else:
-        universe = []
+        # 폴백: 기본값
+        if market.lower() == "us":
+            universe = ["TSLA", "NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "AMD", "SPY", "QQQ"]
+        elif market.lower() == "kr":
+            universe = ["005930.KS", "000660.KS", "035420.KS", "035720.KS"]
+        else:
+            universe = []
 
     candidates = []
 

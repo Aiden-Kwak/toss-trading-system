@@ -42,94 +42,75 @@ def compute_alphas(o, c, h, l, ref_close):
     alpha54 = (c - l) / (h - l) if (h - l) > 0 else 0.5
     mean_rev = -math.log(o / ref_close) if o > 0 and ref_close > 0 else 0
     momentum = math.log(c / ref_close) if c > 0 and ref_close > 0 else 0
-    score = max(0, min(10, (alpha101 + 1) * 5)) + max(0, min(10, (mean_rev * 100) + 5)) + alpha54 * 10
-    return {"alpha101": alpha101, "alpha54": alpha54, "mean_rev": mean_rev, "momentum": momentum, "composite": score}
+    return {"alpha101": alpha101, "alpha33": alpha33, "alpha54": alpha54, "mean_rev": mean_rev, "momentum": momentum}
 
 
 def score_bar(bar, ref_close, volume, is_kr=False):
-    """5분봉 하나를 채점 (130점 만점)"""
+    """5분봉 채점 (100점 만점, signal-engine v2와 동일)"""
     o, h, l, c = bar["Open"], bar["High"], bar["Low"], bar["Close"]
     change_rate = (c - ref_close) / ref_close if ref_close > 0 else 0
 
-    # 거래량
-    if is_kr:
-        thresholds = [(5e6,30),(3e6,25),(1e6,20),(5e5,15),(1e5,10)]
-    else:
-        thresholds = [(50e6,30),(20e6,25),(10e6,20),(5e6,15),(1e6,10)]
-    vol_score = 5
-    for thr, sc in thresholds:
-        if volume >= thr:
-            vol_score = sc; break
-
-    # 모멘텀
-    if is_kr:
-        if 0.01 <= change_rate <= 0.08: mom = 25
-        elif 0.08 < change_rate <= 0.15: mom = 20
-        elif 0.15 < change_rate <= 0.25: mom = 15
-        elif change_rate > 0.25: mom = 5
-        elif -0.03 <= change_rate < 0.01: mom = 15
-        elif -0.08 <= change_rate < -0.03: mom = 10
-        else: mom = 0
-    else:
-        if 0.01 <= change_rate <= 0.05: mom = 25
-        elif 0.05 < change_rate <= 0.10: mom = 15
-        elif change_rate > 0.10: mom = 5
-        elif -0.02 <= change_rate < 0.01: mom = 15
-        elif -0.05 <= change_rate < -0.02: mom = 10
-        else: mom = 0
-
-    # 가격위치
-    pv = change_rate
-    if is_kr:
-        if -0.03 <= pv <= 0.03: price = 20
-        elif 0.03 < pv <= 0.08: price = 15
-        elif 0.08 < pv <= 0.15: price = 10
-        elif pv > 0.15: price = 5
-        elif -0.08 <= pv < -0.03: price = 25
-        else: price = 10
-    else:
-        if -0.02 <= pv <= 0.02: price = 20
-        elif 0.02 < pv <= 0.05: price = 15
-        elif pv > 0.05: price = 5
-        elif -0.05 <= pv < -0.02: price = 25
-        else: price = 10
-
-    port = 20  # 시뮬레이션에서는 여력 충분 가정
     alphas = compute_alphas(o, c, h, l, ref_close)
-    alpha_sc = alphas["composite"]
-    total = vol_score + mom + price + port + alpha_sc
+    a101, a33, a54 = alphas["alpha101"], alphas["alpha33"], alphas["alpha54"]
+    momentum_val, mean_rev_val = alphas["momentum"], alphas["mean_rev"]
 
-    # 시장 보정 (데몬과 동일)
-    regime_adj = 0
-    if change_rate >= 0.05 or change_rate <= -0.05:
-        regime_adj = -15  # crisis
-    elif change_rate <= -0.01:
-        regime_adj = -10  # bear
-    elif change_rate >= 0.01:
-        regime_adj = 5    # bull
-    total += regime_adj
+    total = 0
 
-    # 추세 필터 (데몬과 동일: 하락추세 내 반등 매수 방지)
+    # 1. 방향성 시그널 (0-30): 알파 동의
+    bullish = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v > 0.05)
+    bearish = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v < -0.05)
+    if bullish >= 4: d = 30
+    elif bullish >= 3: d = 22
+    elif bullish >= 2: d = 12
+    elif bearish >= 3: d = 0
+    else: d = 5
+    total += d
+
+    # 2. 모멘텀 품질 (0-25)
+    abs_ch = abs(change_rate)
+    sweet = (0.02 <= abs_ch <= 0.08) if is_kr else (0.015 <= abs_ch <= 0.05)
+    too_hot = abs_ch > (0.15 if is_kr else 0.10)
+    if change_rate > 0 and sweet: m = 25
+    elif change_rate > 0 and not too_hot: m = 15
+    elif too_hot: m = 0
+    elif abs_ch < 0.005: m = 0
+    elif change_rate < 0 and abs_ch < 0.03: m = 5
+    else: m = 0
+    total += m
+
+    # 3. 가격 액션 (0-20)
+    if a101 > 0.5 and a54 > 0.7: a = 20
+    elif a101 > 0.3 and a54 > 0.5: a = 15
+    elif a101 > 0 and a54 > 0.4: a = 10
+    elif a101 < -0.3: a = 0
+    else: a = 5
+    total += a
+
+    # 4. 시장 컨텍스트 (0-25)
+    if abs(change_rate) >= 0.05: regime = "crisis"; ctx = 0
+    elif change_rate <= -0.01: regime = "bear"; ctx = 0
+    elif change_rate >= 0.01: regime = "bull"; ctx = 20
+    else: regime = "range"; ctx = 10
+
     trend_warning = None
-    momentum_val = alphas.get("momentum", 0)
-    mean_rev_val = alphas.get("mean_rev", 0)
     if momentum_val < -0.02 and mean_rev_val > 0.01:
         trend_warning = "falling_knife"
-        total -= 5
+        ctx = max(0, ctx - 10)
+    total += ctx
 
     total = max(0, total)
-    pct = total / 130 * 100
+    pct = total  # 100점 만점
 
-    if pct >= 70: grade = "A"
+    if pct >= 75: grade = "A"
     elif pct >= 55: grade = "B"
-    elif pct >= 40: grade = "C"
+    elif pct >= 35: grade = "C"
     else: grade = "D"
 
     return {
         "score": round(total, 1), "pct": round(pct, 1), "grade": grade,
         "change_rate": round(change_rate * 100, 2),
-        "regime_adj": regime_adj, "trend_warning": trend_warning,
-        "breakdown": {"vol": vol_score, "mom": mom, "price": price, "alpha": round(alpha_sc, 1), "regime": regime_adj},
+        "regime": regime, "trend_warning": trend_warning,
+        "breakdown": {"direction": d, "momentum": m, "action": a, "context": ctx},
         "alphas": alphas,
     }
 

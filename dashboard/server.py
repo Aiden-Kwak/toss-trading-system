@@ -24,6 +24,7 @@ CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/config.json"
 # venv Python (yfinance 등 의존성 포함)
 VENV_PYTHON = REPO_DIR / ".venv" / "bin" / "python3"
 PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else "python3"
+TOSS_BIN = Path(os.environ.get("PATH", "").split(":")[0]) / "tossctl" if "tossinvest" in os.environ.get("PATH", "") else Path.home() / "Desktop/Personal/Stock/tossinvest-cli/bin/tossctl"
 
 # tossctl 환경변수
 TOSS_ENV = {
