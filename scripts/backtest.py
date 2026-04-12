@@ -92,6 +92,46 @@ def _compute_vol_ratio(volumes, period=20):
     return round(volumes[-1] / avg, 2) if avg > 0 else 1.0
 
 
+def classify_stock(closes, volumes=None):
+    """종목 분류: 추세 + 변동성 → 단타 적합 전략 결정"""
+    if len(closes) < 21:
+        return {"regime": "unknown", "volatility": "unknown", "strategy": "avoid", "daytrade_ok": False}
+
+    ema9 = _compute_ema(closes, 9)
+    ema21 = _compute_ema(closes, 21)
+    current = closes[-1]
+
+    # 추세
+    if current > ema21 and ema9 > ema21: regime = "uptrend"
+    elif current < ema21 and ema9 < ema21: regime = "downtrend"
+    else: regime = "sideways"
+
+    # 변동성 (최근 20일 일일 수익률 표준편차)
+    rets = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(max(1, len(closes)-20), len(closes))]
+    import statistics
+    daily_vol = statistics.stdev(rets) * 100 if len(rets) > 1 else 2.0
+
+    if daily_vol >= 3.0: volatility = "high"
+    elif daily_vol >= 1.5: volatility = "medium"
+    else: volatility = "low"
+
+    # 전략 결정
+    if regime == "uptrend" and volatility == "low":
+        strategy, ok = "hold", False           # B&H가 나음
+    elif regime == "uptrend":
+        strategy, ok = "momentum", True        # 모멘텀 단타
+    elif regime == "downtrend" and volatility == "low":
+        strategy, ok = "avoid", False          # 느린 하락
+    elif regime == "downtrend":
+        strategy, ok = "mean_reversion", True  # 반등 단타
+    elif regime == "sideways":
+        strategy, ok = "mean_reversion", True  # 박스권
+    else:
+        strategy, ok = "avoid", False
+
+    return {"regime": regime, "volatility": volatility, "daily_vol": round(daily_vol, 2), "strategy": strategy, "daytrade_ok": ok}
+
+
 def compute_daily_score(row, prev_close, volume, is_kr=False, history=None):
     """일일 종합 점수 계산 (100점 만점, signal-engine v3와 동일)
 
@@ -410,8 +450,9 @@ def run_backtest(
                 entry_grade=pending_entry["grade"],
                 entry_score=pending_entry["score"],
             )
-            # 동적 손익절을 trade에 저장 (나중에 청산 시 사용)
+            # 동적 손익절 + 보유일을 trade에 저장
             current_trade._dynamic_sl = dynamic_sl
+            current_trade._dynamic_hold = pending_entry.get("hold_days", max_hold_days)
             current_trade._dynamic_tp = dynamic_tp
             in_position = True
             pending_entry = None
@@ -439,7 +480,7 @@ def run_backtest(
             elif high_pnl >= eff_tp:
                 exit_reason = "TAKE_PROFIT"
                 exit_price = current_trade.entry_price * (1 + eff_tp)
-            elif days_held >= max_hold_days:
+            elif days_held >= getattr(current_trade, '_dynamic_hold', max_hold_days):
                 exit_reason = "MAX_HOLD"
                 exit_price = row["Close"]
 
@@ -461,16 +502,43 @@ def run_backtest(
         # 포지션 없고 시그널 발생 → 다음 날 매수 예약
         if not in_position and not pending_entry:
             if grade in entry_grades:
-                # 다일 추세 필터: 최근 5일 중 4일 이상 하락이면 진입 금지
+                # [Phase 1] 종목 분류 필터
+                if history:
+                    stock_class = classify_stock(history["closes"])
+                    if not stock_class["daytrade_ok"]:
+                        continue  # 단타 부적합 (상승+저변동 or 하락+저변동)
+
+                # 다일 추세 필터
                 if i >= 5:
                     down_days = sum(1 for j in range(i-4, i+1) if df.iloc[j]["Close"] < df.iloc[j-1]["Close"])
                     if down_days >= 4:
-                        continue  # 5일 중 4일+ 하락 → 강한 하락 추세 → 진입 금지
+                        continue
+
+                # [Phase 3] 전략 분기: 종목 상태에 따라 진입 기준 차별화
+                strategy = stock_class["strategy"] if history else "momentum"
+
+                if strategy == "mean_reversion":
+                    # 평균회귀: RSI 과매도 또는 볼린저 하단일 때만 진입
+                    rsi_val = score.get("rsi")
+                    bb_val = score.get("bb_pctb")
+                    if rsi_val is not None and rsi_val > 40 and (bb_val is None or bb_val > 0.3):
+                        continue  # RSI 과매도도 아니고 볼린저 하단도 아님 → 스킵
+
+                # [Phase 2] 보유 기간 동적화
+                dynamic_hold = max_hold_days
+                if history:
+                    ema_cross = score.get("ema_cross")
+                    if ema_cross == "golden" and stock_class["regime"] == "uptrend":
+                        dynamic_hold = max(max_hold_days, 3)  # 상승 추세면 최소 3일 보유
+                    elif ema_cross == "death":
+                        dynamic_hold = 1  # 데드크로스면 1일만
 
                 pending_entry = {
                     "date": date_str,
                     "grade": grade,
                     "score": score["total"],
+                    "strategy": strategy,
+                    "hold_days": dynamic_hold,
                 }
 
     # 마지막 포지션이 열려있으면 종가로 청산
@@ -514,6 +582,100 @@ def run_backtest(
         result.trades = [asdict(t) for t in trades]
 
     return result
+
+
+def run_walk_forward(symbol: str, total_period: str = "1y",
+                     train_months: int = 3, test_months: int = 1,
+                     **kwargs) -> dict:
+    """Walk-forward 최적화: 학습→실전 반복으로 과적합 방지
+
+    예: 1년 데이터를 3개월 학습 + 1개월 실전으로 반복
+    → 학습 구간에서 최적 파라미터를 찾고, 실전 구간에서 검증
+    """
+    ticker = yf.Ticker(symbol)
+    df = ticker.history(period=total_period)
+    if len(df) < 60:
+        return {"error": "데이터 부족", "symbol": symbol}
+
+    is_kr = ".KS" in symbol or ".KQ" in symbol
+    results = []
+    total_days = len(df)
+    train_days = train_months * 21  # 약 월 21거래일
+    test_days = test_months * 21
+    window = train_days + test_days
+
+    i = 0
+    while i + window <= total_days:
+        train_df = df.iloc[i:i + train_days]
+        test_df = df.iloc[i + train_days:i + window]
+
+        # 학습 구간: 분류
+        train_closes = [train_df.iloc[j]["Close"] for j in range(len(train_df))]
+        stock_class = classify_stock(train_closes)
+
+        # 학습 구간에서 최적 설정 결정
+        if not stock_class["daytrade_ok"]:
+            best_strategy = "skip"
+        else:
+            best_strategy = stock_class["strategy"]
+
+        # 실전 구간 백테스트
+        test_start = test_df.index[0].strftime("%Y-%m-%d")
+        test_end = test_df.index[-1].strftime("%Y-%m-%d")
+
+        # 실전 구간 수동 실행 (간소화)
+        pnls = []
+        if best_strategy != "skip":
+            for j in range(1, len(test_df)):
+                prev = test_df.iloc[j - 1]["Close"]
+                row = test_df.iloc[j]
+                vol = row.get("Volume", 0)
+
+                h_start = max(0, i + train_days + j - 29)
+                h_end = i + train_days + j + 1
+                hist_c = [df.iloc[k]["Close"] for k in range(h_start, min(h_end, total_days))]
+                hist_v = [df.iloc[k].get("Volume", 0) for k in range(h_start, min(h_end, total_days))]
+                history = {"closes": hist_c, "volumes": hist_v} if len(hist_c) >= 15 else None
+
+                sc = compute_daily_score(row, prev, vol, is_kr, history)
+                if sc["grade"] in kwargs.get("entry_grades", ["A", "B"]):
+                    # 다음날 시가 매수 → 다음날 종가 청산 (1일 보유)
+                    if j + 1 < len(test_df):
+                        entry = test_df.iloc[j + 1]["Open"]
+                        exit_p = test_df.iloc[j + 1]["Close"]
+                        pnl = (exit_p - entry) / entry - 0.002
+                        pnls.append(round(pnl * 100, 2))
+
+        win = len([p for p in pnls if p > 0])
+        results.append({
+            "train": f"{train_df.index[0].strftime('%Y-%m-%d')}~{train_df.index[-1].strftime('%Y-%m-%d')}",
+            "test": f"{test_df.index[0].strftime('%Y-%m-%d')}~{test_df.index[-1].strftime('%Y-%m-%d')}",
+            "strategy": best_strategy,
+            "regime": stock_class.get("regime", "?"),
+            "trades": len(pnls),
+            "win_rate": round(win / len(pnls) * 100, 1) if pnls else 0,
+            "total_pnl": round(sum(pnls), 2) if pnls else 0,
+        })
+
+        i += test_days  # 다음 윈도우
+
+    # 종합
+    all_pnls = sum(r["total_pnl"] for r in results)
+    all_trades = sum(r["trades"] for r in results)
+    all_wins = sum(r["trades"] * r["win_rate"] / 100 for r in results)
+
+    return {
+        "symbol": symbol,
+        "period": total_period,
+        "windows": results,
+        "summary": {
+            "total_windows": len(results),
+            "total_trades": all_trades,
+            "total_pnl": round(all_pnls, 2),
+            "avg_win_rate": round(all_wins / all_trades * 100, 1) if all_trades > 0 else 0,
+            "profitable_windows": len([r for r in results if r["total_pnl"] > 0]),
+        }
+    }
 
 
 # ─── 출력 ───
