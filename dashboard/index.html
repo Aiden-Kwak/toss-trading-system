@@ -177,7 +177,15 @@ button.save:hover { opacity:.85; }
     <div id="signalPanel"><div class="loading">보유종목 로드 후 자동 분석</div></div>
   </div>
   <div class="card full-width">
-    <div class="card-header"><span class="card-title">자동매매 데몬</span><button class="card-action" onclick="loadDaemon()">새로고침</button></div>
+    <div class="card-header">
+      <span class="card-title">자동매매 데몬</span>
+      <div style="display:flex;gap:6px">
+        <button class="card-action" style="border-color:var(--green);color:var(--green)" onclick="startDaemon('dry-run')">Dry Run</button>
+        <button class="card-action" style="border-color:var(--red);color:var(--red)" onclick="startDaemon('live')">Go Live</button>
+        <button class="card-action" onclick="stopDaemon()">중지</button>
+        <button class="card-action" onclick="loadDaemon()">새로고침</button>
+      </div>
+    </div>
     <div id="daemonPanel"><div class="loading">데몬 상태 확인 중...</div></div>
   </div>
 </div>
@@ -331,6 +339,19 @@ button.save:hover { opacity:.85; }
   <div class="card full-width">
     <div class="card-header"><span class="card-title">패턴 분석</span><button class="card-action" onclick="loadAnalysis()">분석 실행</button></div>
     <div id="analysisPanel"><div class="loading">거래 기록이 쌓이면 패턴을 분석합니다</div></div>
+  </div>
+
+  <!-- Reports -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">보고서</span>
+      <div style="display:flex;gap:6px">
+        <button class="card-action" onclick="loadReport('daily')">일일</button>
+        <button class="card-action" onclick="loadReport('weekly')">주간</button>
+        <button class="card-action" onclick="loadReport('monthly')">월간</button>
+      </div>
+    </div>
+    <div id="reportPanel"><div class="loading">보고서 유형을 선택하세요</div></div>
   </div>
 </div>
 </div>
@@ -950,6 +971,79 @@ async function saveSettings() {
     msg.style.color = 'var(--red)';
   }
   setTimeout(() => { msg.textContent = ''; }, 3000);
+}
+
+// Daemon control
+async function startDaemon(mode) {
+  if (mode === 'live' && !confirm('실거래 모드로 시작합니다. 실제 돈이 거래됩니다.\n정말 진행하시겠습니까?')) return;
+  const market = prompt('시장을 선택하세요 (us/kr/both):', 'us') || 'us';
+  const interval = mode === 'dry-run' ? 60 : 300;
+  const r = await fetch(API+'/api/daemon/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode, market, interval})});
+  const d = await r.json();
+  if (d.ok) {
+    alert(`데몬 시작됨!\n모드: ${mode}\n시장: ${market}\n간격: ${interval}초\nPID: ${d.pid}`);
+    loadDaemon();
+  } else { alert('시작 실패: ' + (d.error || '')); }
+}
+async function stopDaemon() {
+  if (!confirm('데몬을 중지하시겠습니까?')) return;
+  const r = await fetch(API+'/api/daemon/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+  const d = await r.json(); alert(d.message || d.error || '중지 요청됨');
+  setTimeout(loadDaemon, 2000);
+}
+
+// Reports
+async function loadReport(type) {
+  const panel = document.getElementById('reportPanel');
+  panel.innerHTML = `<div class="loading"><span class="spinner"></span> ${type} 보고서 생성 중...</div>`;
+  const r = await fetch(API+`/api/report?type=${type}`); const d = await r.json();
+  if (d.error) { panel.innerHTML = `<div class="loading">${d.error}</div>`; return; }
+
+  const p = d.period || {};
+  let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div><strong>${d.label} 보고서</strong> <span style="color:var(--text2)">${d.date}</span></div>
+    <button class="primary" onclick="downloadReportPDF('${type}')" style="font-size:12px;padding:6px 12px">PDF 다운로드</button>
+  </div>`;
+
+  html += '<div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">';
+  html += `<div class="stat-mini"><div class="stat-mini-value">${p.trades||0}</div><div class="stat-mini-label">거래</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value ${(p.total_pnl||0)>=0?'positive':'negative'}">${(p.total_pnl||0)>0?'+':''}${p.total_pnl||0}%</div><div class="stat-mini-label">수익</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value">${p.win_rate||0}%</div><div class="stat-mini-label">승률</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value">${d.open_positions||0}</div><div class="stat-mini-label">보유 중</div></div>`;
+  html += '</div>';
+
+  // 종목별
+  if (d.by_symbol && Object.keys(d.by_symbol).length > 0) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:8px 0 4px">종목별</div>';
+    for (const [sym, data] of Object.entries(d.by_symbol)) {
+      const bc = data.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      html += `<div class="pattern-row"><span class="pattern-label">${sym}</span><div class="pattern-bar" style="width:${Math.max(2,Math.abs(data.pnl)*5)}%;background:${bc}"></div><span class="pattern-value">${data.trades}건 ${data.win_rate}% ${data.pnl>0?'+':''}${data.pnl}%</span></div>`;
+    }
+  }
+
+  // 교훈
+  if (d.lessons?.length) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 4px">교훈</div>';
+    d.lessons.forEach(l => {
+      html += `<div style="padding:4px 0;font-size:12px;border-bottom:1px solid var(--border)"><strong>${l.symbol}</strong> <span class="${l.pnl>=0?'positive':'negative'}">${l.pnl>0?'+':''}${l.pnl}%</span> — ${l.lesson}</div>`;
+    });
+  }
+
+  // 누적
+  const c = d.cumulative || {};
+  html += `<div style="margin-top:12px;padding:8px;background:var(--surface2);border-radius:6px;font-size:12px">누적: ${c.total_trades||0}건 | ${c.total_pnl||0}% | 승률 ${c.win_rate||0}%</div>`;
+
+  panel.innerHTML = html;
+}
+
+async function downloadReportPDF(type) {
+  const r = await fetch(API+`/api/report?type=${type}`); const d = await r.json();
+  if (!d.html) { alert('보고서 생성 실패'); return; }
+  // HTML을 새 창에서 열어서 인쇄(PDF 저장)
+  const w = window.open('', '_blank');
+  w.document.write(d.html);
+  w.document.close();
+  setTimeout(() => w.print(), 500);
 }
 
 // Daemon status

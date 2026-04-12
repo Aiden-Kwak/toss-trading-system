@@ -377,6 +377,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 self._json_response({"status": "stopped", "message": "데몬 미실행"})
 
+        elif path == "/api/report":
+            # 일일/주간/월간 보고서 생성
+            report_type = params.get("type", "daily")  # daily, weekly, monthly
+            result = subprocess.run(
+                [PYTHON, str(SCRIPTS_DIR / "report-generator.py"), report_type],
+                capture_output=True, text=True, timeout=15
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:300]})
+
         elif path == "/api/resolve-kr":
             query = params.get("q", "")
             result = subprocess.run(
@@ -517,6 +526,28 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             config_file.parent.mkdir(parents=True, exist_ok=True)
             config_file.write_text(json.dumps(body, ensure_ascii=False, indent=2))
             self._json_response({"ok": True, "saved": body})
+
+        elif path == "/api/daemon/start":
+            mode = body.get("mode", "dry-run")  # dry-run or live
+            market = body.get("market", "us")
+            interval = body.get("interval", 300)
+            cmd = [PYTHON, str(SCRIPTS_DIR / "autotrade-daemon.py"), "--interval", str(interval), "--market", market]
+            if mode == "dry-run":
+                cmd.append("--dry-run")
+            try:
+                import subprocess as sp
+                proc = sp.Popen(cmd, stdout=open(str(REPO_DIR / "daemon.log"), "a"), stderr=sp.STDOUT, env=TOSS_ENV)
+                self._json_response({"ok": True, "pid": proc.pid, "mode": mode, "market": market})
+            except Exception as e:
+                self._json_response({"ok": False, "error": str(e)})
+
+        elif path == "/api/daemon/stop":
+            import signal as sig
+            try:
+                result = subprocess.run(["pkill", "-f", "autotrade-daemon"], capture_output=True, text=True)
+                self._json_response({"ok": True, "message": "데몬 종료 요청 전송"})
+            except Exception as e:
+                self._json_response({"ok": False, "error": str(e)})
 
         elif path == "/api/screener/watchlist-add":
             # 심볼 유효성 검증: tossctl 또는 yfinance로 조회 시도
