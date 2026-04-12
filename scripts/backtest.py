@@ -300,8 +300,11 @@ def run_backtest(
             # ATR 기반 동적 손익절
             atr_val = atrs.get(date_str, 0)
             if use_atr_stops and atr_val > 0:
-                dynamic_sl = -(atr_val * atr_sl_mult / entry_price)  # ATR x 1.5 / 진입가 = 비율
-                dynamic_tp = atr_val * atr_tp_mult / entry_price     # ATR x 3.0 / 진입가 = 비율
+                atr_sl = -(atr_val * atr_sl_mult / entry_price)
+                atr_tp = atr_val * atr_tp_mult / entry_price
+                # 사용자 설정과 ATR 중 더 타이트한 값 사용 (사용자 설정 우선)
+                dynamic_sl = max(stop_loss, atr_sl)    # 덜 넓은 손절 (예: -2% vs -6.7% → -2%)
+                dynamic_tp = min(take_profit, atr_tp)  # 덜 넓은 익절 (예: 5% vs 13% → 5%)
             else:
                 dynamic_sl = stop_loss
                 dynamic_tp = take_profit
