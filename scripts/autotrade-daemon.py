@@ -266,12 +266,46 @@ def find_buy_candidates(config: dict) -> list:
     return [c for c in candidates if c.get("grade") in entry_grades]
 
 
-def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run: bool) -> bool:
+def _generate_auto_lesson(symbol: str, pnl: float, exit_reason: str, signal: dict) -> str:
+    """청산 결과에서 자동 교훈 생성"""
+    profit_rate = signal.get("profit_rate", 0)
+    daily_rate = signal.get("daily_rate", 0)
+
+    if exit_reason == "SELL_STOP_LOSS":
+        if abs(profit_rate) > 5:
+            return f"손절 {profit_rate:.1f}%. 손절선 도달 전 이미 큰 하락. 진입 타이밍 검토 필요"
+        return f"손절 {profit_rate:.1f}%. 진입 후 빠른 하락. 모멘텀/추세 확인 강화 필요"
+
+    elif exit_reason == "SELL_TAKE_PROFIT":
+        return f"익절 +{abs(profit_rate):.1f}%. 목표가 도달 성공. 진입 판단 적절"
+
+    elif exit_reason == "SELL_TRAILING_STOP":
+        return f"트레일링 스톱 {profit_rate:.1f}%. 수익 보호 성공. 고점 대비 하락으로 청산"
+
+    elif exit_reason == "MARKET_CLOSE":
+        if pnl > 0:
+            return f"장마감 청산 +{pnl:.1f}%. 익절선 미도달이지만 수익. 익절선 하향 검토"
+        else:
+            return f"장마감 청산 {pnl:.1f}%. 최대보유기간 내 회복 실패"
+
+    return f"청산 {pnl:.1f}% ({exit_reason})"
+
+
+def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run: bool,
+                grade: str = "A", score: float = 0, reason: str = "") -> bool:
     """매수 실행"""
-    log(f"  BUY: {symbol} x{qty} @ {price}")
+    log(f"  BUY: {symbol} x{qty} @ {price} ({grade}등급, {score}점)")
 
     if dry_run:
         log(f"  [DRY RUN] 주문 스킵")
+        # dry-run에서도 기록 (시뮬레이션 추적용)
+        run_script("trade-logger.py", "log",
+                    "--symbol", symbol, "--side", "buy",
+                    "--qty", str(qty), "--price", str(price),
+                    "--grade", grade, "--score", str(score),
+                    "--reason", reason or "autotrade-dry-run",
+                    "--mode", "dry-run")
+        state.today_trades += 1
         return True
 
     # quick-order.sh 실행
@@ -284,11 +318,12 @@ def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run
 
     if result.returncode == 0:
         log(f"  BUY SUCCESS: {symbol}")
-        # 거래 기록
         run_script("trade-logger.py", "log",
                     "--symbol", symbol, "--side", "buy",
                     "--qty", str(qty), "--price", str(price),
-                    "--grade", "A", "--mode", "autotrade")
+                    "--grade", grade, "--score", str(score),
+                    "--reason", reason or "autotrade",
+                    "--mode", "autotrade")
         state.today_trades += 1
         return True
     else:
@@ -329,11 +364,22 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool) -
         pnl = signal.get("profit_rate", 0)
         state.today_pnl += pnl
 
+        exit_reason = signal.get("action", "MANUAL")
+
         # 거래 기록
         run_script("trade-logger.py", "close",
                     "--symbol", symbol,
                     "--exit-price", str(price),
-                    "--exit-reason", signal.get("action", "MANUAL"))
+                    "--exit-reason", exit_reason)
+
+        # 자동 교훈 생성
+        auto_lesson = _generate_auto_lesson(symbol, pnl, exit_reason, signal)
+        if auto_lesson:
+            lesson_score = 7 if pnl > 0 else 3
+            run_script("trade-logger.py", "lesson",
+                        "--symbol", symbol,
+                        "--lesson", auto_lesson,
+                        "--score", str(lesson_score))
 
         if pnl < 0:
             state.consecutive_losses += 1
@@ -471,7 +517,9 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             qty = max(1, int(max_invest / price))
             cost = qty * price
 
-            if execute_buy(sym, price, qty, state, dry_run):
+            if execute_buy(sym, price, qty, state, dry_run,
+                           grade=c.get("grade", "?"), score=c.get("score", 0),
+                           reason=c.get("recommendation", "")):
                 orderable -= cost  # 잔여 주문가능금액 차감
                 current_positions.add(sym)
                 bought += 1
@@ -480,7 +528,60 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             log(f"  {bought}종목 매수 완료 (포지션: {len(current_positions)}/{max_pos})")
 
     state.status = DaemonStatus.RUNNING
+
+    # 매 20사이클마다 자동 학습 실행
+    if state.cycle_count % 20 == 0 and state.cycle_count > 0:
+        _auto_learn(config)
+
     return True
+
+
+def _auto_learn(config: dict):
+    """축적된 거래 데이터로 자동 학습 & 파라미터 조정"""
+    log("  [학습] 자동 분석 실행...")
+    result = run_script("trade-analyzer.py", "suggest")
+    if not isinstance(result, dict):
+        return
+
+    analysis = result.get("analysis", {})
+    suggestions = result.get("suggestions", [])
+    closed = analysis.get("closed_trades", 0)
+
+    if closed < 10:
+        log(f"  [학습] 데이터 부족 ({closed}건 < 10건). 스킵")
+        return
+
+    # 자동 적용 가능한 제안만 처리
+    applied = []
+    for s in suggestions:
+        if s.get("param") and s.get("suggested") is not None and s["type"] in ("warning", "success"):
+            # config 파일에 반영
+            config[s["param"]] = s["suggested"]
+            applied.append(f"{s['param']}: {s.get('current')} → {s['suggested']}")
+
+    if applied:
+        # config 저장
+        SIGNAL_CONFIG.write_text(json.dumps(config, ensure_ascii=False, indent=2))
+        for a in applied:
+            log(f"  [학습] 자동 적용: {a}")
+        send_notification("학습 완료", f"{len(applied)}개 파라미터 조정됨")
+    else:
+        log("  [학습] 조정 불필요. 현재 설정 유지")
+
+    # Kelly 계산 (충분한 데이터가 있을 때)
+    if closed >= 20:
+        win_rate = analysis.get("win_rate", 50) / 100
+        avg_win = abs(analysis.get("avg_win", 5))
+        avg_loss = abs(analysis.get("avg_loss", 3))
+        if avg_loss > 0:
+            b = avg_win / avg_loss
+            kelly = (b * win_rate - (1 - win_rate)) / b
+            half_kelly = max(2, min(25, kelly * 0.5 * 100))
+            current_pct = config.get("max_position_pct", 10)
+            if abs(half_kelly - current_pct) > 2:  # 2%p 이상 차이나면
+                config["max_position_pct"] = round(half_kelly, 1)
+                SIGNAL_CONFIG.write_text(json.dumps(config, ensure_ascii=False, indent=2))
+                log(f"  [학습] Kelly 사이징: {current_pct}% → {half_kelly:.1f}%")
 
 
 def main():
