@@ -317,7 +317,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                                         "symbol": ev.get("symbol", ""),
                                         "name": ev.get("name", ""),
                                         "score": ev.get("score", 0),
-                                        "max_score": ev.get("max_score", 130),
+                                        "max_score": ev.get("max_score", 100),
                                         "pct": ev.get("score_pct", 0),
                                         "grade": ev.get("grade", "D"),
                                         "recommendation": ev.get("recommendation", "SKIP"),

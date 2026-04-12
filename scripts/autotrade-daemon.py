@@ -267,7 +267,7 @@ def check_risk_gate(state: DaemonState, config: dict) -> bool:
 
 
 def find_buy_candidates(config: dict) -> list:
-    """스크리너로 매수 후보 탐색"""
+    """스크리너로 매수 후보 탐색 + 기술적 지표 + 추세추종"""
     result = run_script("stock-screener.py", "scan",
                         "--source", "watchlist",
                         timeout=30)
@@ -275,9 +275,41 @@ def find_buy_candidates(config: dict) -> list:
     if not isinstance(result, dict):
         return []
 
-    candidates = result.get("buy_candidates", [])
+    candidates = result.get("buy_candidates", []) + result.get("watch_list", [])
     entry_grades = config.get("entry_grades", ["A", "B"])
-    return [c for c in candidates if c.get("grade") in entry_grades]
+    enriched = []
+
+    for c in candidates:
+        sym = c.get("symbol", "")
+        product_code = c.get("product_code", sym)
+
+        # 기술적 지표 가져오기 (토스 public API)
+        tech = run_script("technical-indicators.py", "analyze",
+                          "--symbol", product_code,
+                          "--market", "kr" if c.get("market_code", "") in ("KSP", "KSQ") else "us")
+
+        if isinstance(tech, dict) and not tech.get("_error") and not tech.get("error"):
+            # 추세추종 판단: 골든크로스 + 상승 추세
+            ema9 = tech.get("ema", {}).get("ema9", 0)
+            ema21 = tech.get("ema", {}).get("ema21", 0)
+            is_uptrend = ema9 > ema21 and tech.get("current_price", 0) > ema21
+
+            if is_uptrend:
+                # 추세추종 후보 (등급 무관)
+                c["grade"] = "T"
+                c["strategy"] = "trend_follow"
+                c["score"] = 99
+                c["tech"] = tech
+                enriched.append(c)
+                continue
+
+        # 일반 단타 후보 (등급 기반)
+        if c.get("grade") in entry_grades:
+            c["strategy"] = "daytrade"
+            c["tech"] = tech if isinstance(tech, dict) else None
+            enriched.append(c)
+
+    return enriched
 
 
 def _generate_auto_lesson(symbol: str, pnl: float, exit_reason: str, signal: dict) -> str:
@@ -536,9 +568,10 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             qty = max(1, int(max_invest / price))
             cost = qty * price
 
+            strategy = c.get("strategy", "daytrade")
             if execute_buy(sym, price, qty, state, dry_run,
                            grade=c.get("grade", "?"), score=c.get("score", 0),
-                           reason=c.get("recommendation", "")):
+                           reason=f"{strategy}:{c.get('recommendation', '')}"):
                 orderable -= cost  # 잔여 주문가능금액 차감
                 current_positions.add(sym)
                 bought += 1
