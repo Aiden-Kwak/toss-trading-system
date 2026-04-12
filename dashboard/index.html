@@ -118,6 +118,18 @@ button.primary:hover { opacity:0.9; }
 .maint-icon { font-size:18px; margin-right:8px; } .maint-text { font-size:14px; font-weight:600; color:#fef3c7; }
 .maint-time { font-size:12px; color:#fde68a; margin-top:4px; }
 .maint-countdown { font-size:13px; color:#fff; font-weight:700; margin-left:8px; }
+/* Settings form */
+.settings-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.setting-item { background:var(--surface2); border-radius:8px; padding:14px; }
+.setting-label { font-size:12px; color:var(--text2); margin-bottom:6px; }
+.setting-input { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:6px; font-size:14px; font-weight:600; }
+.setting-input:focus { border-color:var(--blue); outline:none; }
+.setting-unit { font-size:11px; color:var(--text2); margin-top:4px; }
+.setting-bar { display:flex; gap:8px; margin-top:16px; align-items:center; }
+button.save { background:var(--green); color:#000; border:none; padding:10px 24px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; }
+button.save:hover { opacity:.85; }
+.save-msg { font-size:12px; margin-left:8px; }
+
 @media (max-width:768px) { .container { grid-template-columns:1fr; } .summary-grid { grid-template-columns:repeat(2,1fr); } .alpha-grid { grid-template-columns:repeat(3,1fr); } .tab { padding:10px 12px; font-size:12px; } }
 </style>
 </head>
@@ -235,6 +247,11 @@ button.primary:hover { opacity:0.9; }
 <!-- ==================== TAB 4: 리스크 ==================== -->
 <div class="tab-page" id="page-risk">
 <div class="container">
+  <!-- Settings -->
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">트레이딩 설정</span><button class="card-action" onclick="loadSettings()">새로고침</button></div>
+    <div id="settingsPanel"><div class="loading">설정 로딩 중...</div></div>
+  </div>
   <div class="card">
     <div class="card-header"><span class="card-title">리스크 게이트</span><button class="card-action" onclick="loadRiskGate()">새로고침</button></div>
     <div id="riskGate"><div class="loading"><span class="spinner"></span></div></div>
@@ -284,7 +301,7 @@ function switchTab(name) {
   document.getElementById('page-' + name).classList.add('active');
   // Load data for the tab
   if (name === 'screener') loadWatchlist();
-  if (name === 'risk') { loadRiskGate(); loadProtected(); }
+  if (name === 'risk') { loadSettings(); loadRiskGate(); loadProtected(); }
   if (name === 'journal') loadTrades();
 }
 
@@ -568,6 +585,78 @@ async function runBacktest() {
     html += '</div>';
   });
   panel.innerHTML = html;
+}
+
+// Settings
+async function loadSettings() {
+  const r = await fetch(API+'/api/trades/config'); const d = await r.json();
+  const panel = document.getElementById('settingsPanel');
+  const fields = [
+    {key:'max_positions', label:'동시 포지션 한도', unit:'종목', type:'number', step:1, min:1, max:10},
+    {key:'max_position_pct', label:'1종목 최대 비중', unit:'% (주문가능금액 대비)', type:'number', step:1, min:1, max:100},
+    {key:'stop_loss_pct', label:'손절선', unit:'% (진입가 대비)', type:'number', step:0.5, min:-20, max:0},
+    {key:'take_profit_pct', label:'익절선', unit:'% (진입가 대비)', type:'number', step:0.5, min:0, max:50},
+    {key:'daily_loss_limit_pct', label:'일일 최대 손실', unit:'% (총자산 대비)', type:'number', step:0.5, min:-20, max:0},
+    {key:'cooldown_after_consecutive_losses', label:'연속 손절 냉각', unit:'회 연속 손절 후 냉각', type:'number', step:1, min:1, max:10},
+  ];
+
+  let html = '<div class="settings-grid">';
+  fields.forEach(f => {
+    const val = d[f.key] ?? '';
+    html += `<div class="setting-item">
+      <div class="setting-label">${f.label}</div>
+      <input class="setting-input" type="${f.type}" id="cfg-${f.key}" value="${val}" step="${f.step}" min="${f.min}" max="${f.max}">
+      <div class="setting-unit">${f.unit}</div>
+    </div>`;
+  });
+  html += '</div>';
+
+  // 진입 등급
+  const grades = d.entry_grades || ['A','B'];
+  html += `<div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+    <span style="font-size:12px;color:var(--text2)">진입 등급:</span>
+    <label style="font-size:13px"><input type="checkbox" id="cfg-grade-A" ${grades.includes('A')?'checked':''}> A (STRONG_BUY)</label>
+    <label style="font-size:13px"><input type="checkbox" id="cfg-grade-B" ${grades.includes('B')?'checked':''}> B (BUY)</label>
+    <label style="font-size:13px"><input type="checkbox" id="cfg-grade-C" ${grades.includes('C')?'checked':''}> C (WATCH)</label>
+  </div>`;
+
+  html += `<div class="setting-bar">
+    <button class="save" onclick="saveSettings()">설정 저장</button>
+    <span class="save-msg" id="saveMsg"></span>
+  </div>`;
+
+  panel.innerHTML = html;
+}
+
+async function saveSettings() {
+  const config = {
+    max_positions: parseInt(document.getElementById('cfg-max_positions').value) || 2,
+    max_position_pct: parseFloat(document.getElementById('cfg-max_position_pct').value) || 10,
+    stop_loss_pct: parseFloat(document.getElementById('cfg-stop_loss_pct').value) || -3,
+    take_profit_pct: parseFloat(document.getElementById('cfg-take_profit_pct').value) || 7,
+    daily_loss_limit_pct: parseFloat(document.getElementById('cfg-daily_loss_limit_pct').value) || -2,
+    cooldown_after_consecutive_losses: parseInt(document.getElementById('cfg-cooldown_after_consecutive_losses').value) || 3,
+    entry_grades: [],
+  };
+  if (document.getElementById('cfg-grade-A').checked) config.entry_grades.push('A');
+  if (document.getElementById('cfg-grade-B').checked) config.entry_grades.push('B');
+  if (document.getElementById('cfg-grade-C').checked) config.entry_grades.push('C');
+  if (config.entry_grades.length === 0) config.entry_grades = ['A'];
+
+  const r = await fetch(API+'/api/trades/config/save', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(config)
+  });
+  const d = await r.json();
+  const msg = document.getElementById('saveMsg');
+  if (d.ok) {
+    msg.textContent = '저장 완료! 데몬 다음 사이클부터 적용됩니다.';
+    msg.style.color = 'var(--green)';
+  } else {
+    msg.textContent = '저장 실패';
+    msg.style.color = 'var(--red)';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 3000);
 }
 
 // Daemon status

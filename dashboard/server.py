@@ -403,6 +403,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         else:
             self._json_response({"error": "not found"}, 404)
 
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -457,6 +464,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 capture_output=True, text=True, timeout=5
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        elif path == "/api/trades/config/save":
+            config_file = Path.home() / "Library/Application Support/tossctl/signal-config.json"
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text(json.dumps(body, ensure_ascii=False, indent=2))
+            self._json_response({"ok": True, "saved": body})
 
         elif path == "/api/screener/watchlist-add":
             args = [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-add"]
