@@ -240,13 +240,27 @@ def run_portfolio_backtest(
             exit_reason = None
             exit_price = ds["close"]
 
+            is_trend = pos.get("strategy") == "trend_follow"
+
             if low_pnl <= pos["sl"]:
                 exit_reason = "STOP_LOSS"
                 exit_price = pos["entry_price"] * (1 + pos["sl"])
-            elif high_pnl >= pos["tp"]:
+            elif not is_trend and high_pnl >= pos["tp"]:
                 exit_reason = "TAKE_PROFIT"
                 exit_price = pos["entry_price"] * (1 + pos["tp"])
-            elif pos["hold_days"] >= max_hold:
+            elif is_trend:
+                # 추세 파괴 체크: EMA 데드크로스
+                sym_df = all_data.get(sym)
+                if sym_df is not None:
+                    idx = sym_df.index.get_loc(date) if date in sym_df.index else -1
+                    if idx >= 21:
+                        closes = [sym_df.iloc[j]["Close"] for j in range(max(0, idx - 20), idx + 1)]
+                        e9 = sum(closes[-9:]) / 9
+                        e21 = sum(closes) / len(closes)
+                        if e9 < e21:
+                            exit_reason = "TREND_BREAK"
+                            exit_price = ds["close"]
+            elif pos["hold_days"] >= pos.get("max_hold", max_hold):
                 exit_reason = "MAX_HOLD"
                 exit_price = ds["close"]
 
@@ -306,31 +320,56 @@ def run_portfolio_backtest(
             invest = qty * entry_price
             cash -= invest
 
+            strategy_type = p.get("strategy", "daytrade")
+            if strategy_type == "trend_follow":
+                sl = -0.08  # 추세추종: 고정 -8% 손절 (추세 노이즈 감안)
+                tp = 9.99   # 익절 없음 (추세 파괴로만 청산)
+
             positions[sym] = {
                 "entry_price": entry_price, "qty": qty, "entry_date": date_str,
                 "grade": p["grade"], "score": p["score"],
                 "sl": sl, "tp": tp, "hold_days": 0,
+                "strategy": strategy_type, "max_hold": p.get("max_hold", max_hold),
             }
 
-        # 3. 오늘 시그널 → 내일 매수 예약 (우선순위 정렬)
+        # 3. 오늘 시그널 → 내일 매수 예약
         candidates = []
         for sym, sc in day_scores.items():
-            if sc["grade"] in entry_grades and sym not in positions and sym not in pending:
-                # 다일 추세 필터
-                sym_df = all_data.get(sym)
-                if sym_df is not None:
-                    idx = sym_df.index.get_loc(date) if date in sym_df.index else -1
+            if sym in positions or sym in pending:
+                continue
+
+            sym_df = all_data.get(sym)
+            if sym_df is None:
+                continue
+            idx = sym_df.index.get_loc(date) if date in sym_df.index else -1
+
+            # 종목 분류
+            if idx >= 21:
+                hist_closes = [sym_df.iloc[j]["Close"] for j in range(max(0, idx - 20), idx + 1)]
+                e9 = sum(hist_closes[-9:]) / 9
+                e21 = sum(hist_closes) / len(hist_closes)
+                is_uptrend = hist_closes[-1] > e21 and e9 > e21
+            else:
+                is_uptrend = False
+                e9, e21 = 0, 0
+
+            if is_uptrend:
+                # 추세추종: 골든크로스 + 당일 과열 아닌 경우 → 등급 무관
+                if sc["change"] <= 2.0:  # 2% 이하면 진입 (급등일만 제외)
+                    candidates.append({"sym": sym, "grade": "T", "score": 99, "strategy": "trend_follow", "max_hold": 999})
+            else:
+                # 단타: 등급 기반
+                if sc["grade"] in entry_grades:
                     if idx >= 5:
                         down = sum(1 for j in range(idx - 4, idx + 1) if sym_df.iloc[j]["Close"] < sym_df.iloc[j - 1]["Close"])
                         if down >= 4:
-                            continue  # 5일 중 4일+ 하락 → 스킵
-
-                candidates.append({"sym": sym, "grade": sc["grade"], "score": sc["score"]})
+                            continue
+                    candidates.append({"sym": sym, "grade": sc["grade"], "score": sc["score"], "strategy": "daytrade", "max_hold": max_hold})
 
         # 우선순위: 등급 → 점수
         candidates.sort(key=lambda x: (-{"A": 3, "B": 2, "C": 1, "D": 0}.get(x["grade"], 0), -x["score"]))
         for c in candidates[:max_positions]:
-            pending[c["sym"]] = {"grade": c["grade"], "score": c["score"], "date": date_str}
+            pending[c["sym"]] = {"grade": c["grade"], "score": c["score"], "date": date_str, "strategy": c.get("strategy", "daytrade"), "max_hold": c.get("max_hold", max_hold)}
 
         # 일일 자산 계산
         pos_value = sum(
