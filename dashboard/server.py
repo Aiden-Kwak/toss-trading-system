@@ -472,11 +472,38 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response({"ok": True, "saved": body})
 
         elif path == "/api/screener/watchlist-add":
-            args = [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-add"]
-            for k, v in body.items():
-                args.extend([f"--{k}", str(v)])
-            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
-            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+            # 심볼 유효성 검증: tossctl 또는 yfinance로 조회 시도
+            sym = body.get("symbol", "").upper()
+            valid = False
+            name = body.get("name", "")
+            # tossctl로 시세 조회 시도
+            check = run_tossctl("quote", "get", sym)
+            if isinstance(check, dict) and not check.get("_error") and not check.get("error"):
+                valid = True
+                if not name:
+                    name = check.get("name", "")
+            else:
+                # yfinance 폴백
+                try:
+                    import subprocess as sp2
+                    r2 = sp2.run([PYTHON, "-c", f"import yfinance as yf; t=yf.Ticker('{sym}'); h=t.history(period='5d'); print(len(h))"],
+                                 capture_output=True, text=True, timeout=10)
+                    if r2.returncode == 0 and int(r2.stdout.strip() or 0) > 0:
+                        valid = True
+                except Exception:
+                    pass
+
+            if not valid:
+                self._json_response({"error": f"'{sym}'은(는) 유효하지 않은 심볼입니다. 정확한 티커를 입력해주세요."})
+            else:
+                body["symbol"] = sym
+                if name:
+                    body["name"] = name
+                args = [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-add"]
+                for k, v in body.items():
+                    args.extend([f"--{k}", str(v)])
+                result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+                self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/screener/watchlist-remove":
             result = subprocess.run(
