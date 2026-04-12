@@ -206,6 +206,19 @@ button.save:hover { opacity:.85; }
     </div>
     <div id="screenerResult"><div class="loading">스캔 버튼을 클릭하세요</div></div>
   </div>
+  <!-- Technical Analysis -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">기술적 분석 (RSI/볼린저/EMA)</span></div>
+    <div class="input-row"><input type="text" id="techSymbol" placeholder="종목코드 (예: US20200930014, A005930)"><button class="primary" onclick="runTechnical()">분석</button></div>
+    <div id="techResult" style="margin-top:12px"></div>
+  </div>
+
+  <!-- Realtime Ranking -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">실시간 랭킹 (토스증권)</span><button class="card-action" onclick="loadRanking()">새로고침</button></div>
+    <div id="rankingResult"><div class="loading">새로고침을 클릭하세요</div></div>
+  </div>
+
   <div class="card full-width">
     <div class="card-header"><span class="card-title">매수 평가 (101 Alphas)</span></div>
     <div class="input-row"><input type="text" id="evalSymbol" placeholder="종목 심볼 (예: TSLA, 005930)"><button class="primary" onclick="evaluateBuy()">평가</button></div>
@@ -688,6 +701,48 @@ async function runDaySim() {
       html += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><strong>${sym}</strong>: 점수 ${Math.min(...vals).toFixed(0)}~${Math.max(...vals).toFixed(0)} | A=${grades.filter(g=>g==='A').length} B=${grades.filter(g=>g==='B').length} C=${grades.filter(g=>g==='C').length} D=${grades.filter(g=>g==='D').length}</div>`;
     }
   }
+  panel.innerHTML = html;
+}
+
+// Technical Analysis
+async function runTechnical() {
+  const sym = document.getElementById('techSymbol').value.trim(); if(!sym) return;
+  const panel = document.getElementById('techResult');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span></div>';
+  const mkt = (sym.startsWith('A') && sym.length <= 7) ? 'kr' : 'us';
+  const r = await fetch(API+`/api/technical?symbol=${sym}&market=${mkt}`); const d = await r.json();
+  if (d.error) { panel.innerHTML=`<div class="loading">${d.error}</div>`; return; }
+
+  const gc = d.tech_grade==='A'?'var(--green)':d.tech_grade==='B'?'var(--blue)':d.tech_grade==='C'?'var(--yellow)':'var(--red)';
+  let html = `<div style="display:flex;gap:16px;align-items:center;margin-bottom:12px">
+    <div class="score-ring grade-${d.tech_grade}" style="width:60px;height:60px;font-size:20px">${d.tech_grade}</div>
+    <div><div style="font-size:16px;font-weight:700">${d.code} <span class="${d.change_pct>=0?'positive':'negative'}">${d.change_pct>0?'+':''}${d.change_pct}%</span></div>
+    <div class="mono" style="font-size:13px">기술 점수: ${d.tech_score}/100</div></div></div>`;
+
+  html += '<div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">';
+  html += `<div class="stat-mini"><div class="stat-mini-value" style="color:${d.rsi?.value<=30?'var(--green)':d.rsi?.value>=70?'var(--red)':'var(--text)'}">${d.rsi?.value}</div><div class="stat-mini-label">RSI (${d.rsi?.signal})</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value">${d.bollinger?.pct_b}</div><div class="stat-mini-label">볼린저 %B (${d.bollinger?.signal?.slice(0,8)})</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value" style="color:${d.ema?.ema9>d.ema?.ema21?'var(--green)':'var(--red)'}">${d.ema?.ema9>d.ema?.ema21?'▲':'▼'}</div><div class="stat-mini-label">EMA (${d.ema?.signal?.slice(0,6)})</div></div>`;
+  html += `<div class="stat-mini"><div class="stat-mini-value" style="color:${d.volume_ratio?.value>=1.5?'var(--green)':'var(--text)'}">${d.volume_ratio?.value}x</div><div class="stat-mini-label">거래량 (${d.volume_ratio?.signal?.slice(0,8)})</div></div>`;
+  html += '</div>';
+  panel.innerHTML = html;
+}
+
+// Realtime Ranking
+async function loadRanking() {
+  const panel = document.getElementById('rankingResult');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span></div>';
+  const r = await fetch(API+'/api/ranking?size=10'); const d = await r.json();
+  if (!Array.isArray(d)) { panel.innerHTML=`<div class="loading">${d.error||'데이터 없음'}</div>`; return; }
+  let html = '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+  d.forEach((s,i) => {
+    html += `<div class="protected-tag" style="border-color:var(--purple);cursor:pointer" onclick="document.getElementById('techSymbol').value='${s.code}';runTechnical()">
+      <span style="font-weight:700;color:var(--purple)">${i+1}</span>
+      <span style="font-weight:600">${s.symbol||s.name}</span>
+      <span style="font-size:11px;color:var(--text2)">${s.name}</span>
+    </div>`;
+  });
+  html += '</div>';
   panel.innerHTML = html;
 }
 

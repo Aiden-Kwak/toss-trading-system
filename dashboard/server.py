@@ -400,6 +400,18 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=TOSS_ENV)
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
 
+        elif path == "/api/technical":
+            sym = params.get("symbol", "")
+            mkt = params.get("market", "us")
+            cmd = [PYTHON, str(SCRIPTS_DIR / "technical-indicators.py"), "analyze", "--symbol", sym, "--market", mkt]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:300]})
+
+        elif path == "/api/ranking":
+            cmd = [PYTHON, str(SCRIPTS_DIR / "technical-indicators.py"), "ranking", "--size", params.get("size", "20")]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:300]})
+
         elif path == "/api/screener/scan":
             cmd_args = [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "scan"]
             if params.get("source"): cmd_args.extend(["--source", params["source"]])
