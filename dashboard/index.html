@@ -522,7 +522,6 @@ async function runBacktest() {
   const sl = document.getElementById('btStopLoss').value.trim() || '-0.03';
   const tp = document.getElementById('btTakeProfit').value.trim() || '0.07';
   const grades = document.getElementById('btGrades').value;
-  const panel = document.getElementById('btResult');
   panel.innerHTML = '<div class="loading"><span class="spinner"></span> 백테스트 중 (최대 60초)...</div>';
   const r = await fetch(API+`/api/backtest/period?symbols=${syms}&period=${period}&stop-loss=${sl}&take-profit=${tp}&grades=${grades}`);
   const data = await r.json();
