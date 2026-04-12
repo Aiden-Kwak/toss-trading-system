@@ -22,15 +22,68 @@ from dataclasses import dataclass
 # ─── 기본 설정 ───
 
 DEFAULT_CONFIG = {
-    "max_position_pct": 10,        # 1회 최대 투자: 총자산의 N%
+    "max_position_pct": 10,        # 1회 최대 투자: 주문가능금액의 N%
     "stop_loss_pct": -3.0,         # 손절선: 진입가 대비 -N%
     "take_profit_pct": 7.0,        # 익절선: 진입가 대비 +N%
-    "daily_loss_limit_pct": -2.0,  # 일일 최대 손실: 총자산의 -N%
+    "daily_loss_limit_pct": -2.0,  # 일일 최대 손실: 운용금 대비 -N%
     "max_positions": 2,            # 동시 보유 최대 종목 수
     "volume_spike_ratio": 1.5,     # 거래량 급증 기준: 평소 대비 N배
     "min_profit_rate_buy": -0.05,  # 매수 고려 최대 하락률 (과매도 진입)
     "momentum_threshold": 0.02,    # 모멘텀 기준: 일일 등락률 N% 이상
+    "trailing_stop_trigger": 3.0,  # 트레일링 스톱 시작: 수익률 +N%
+    "trailing_stop_distance": 2.0, # 트레일링 거리: 고점 대비 -N%
 }
+
+
+# ─── 시장 상황 판단 ───
+
+def detect_market_regime(quote: dict) -> str:
+    """단일 종목의 가격 동향으로 시장 상황을 근사 판단합니다.
+    (정밀 판단은 SPY/KOSPI 지수 데이터 필요)
+
+    Returns: "bull", "bear", "range", "crisis"
+    """
+    change_rate = quote.get("change_rate", 0)
+    # 급변 (±5% 이상)
+    if abs(change_rate) >= 0.05:
+        return "crisis"
+    # 상승
+    if change_rate >= 0.01:
+        return "bull"
+    # 하락
+    if change_rate <= -0.01:
+        return "bear"
+    return "range"
+
+
+# ─── Kelly Criterion ───
+
+def calculate_kelly(win_rate: float, avg_win: float, avg_loss: float,
+                    fraction: float = 0.5) -> float:
+    """Kelly Criterion으로 최적 포지션 비율 계산
+
+    Args:
+        win_rate: 승률 (0~1)
+        avg_win: 평균 수익률 (양수, 예: 5.0)
+        avg_loss: 평균 손실률 (양수, 예: 3.0)
+        fraction: Kelly 비율 (0.5 = Half Kelly 권장)
+
+    Returns:
+        최적 투자 비율 (%)
+    """
+    if avg_loss <= 0 or win_rate <= 0:
+        return 5.0  # 데이터 부족 시 보수적 기본값
+
+    b = avg_win / avg_loss  # 수익/손실 비율
+    p = win_rate
+    q = 1 - p
+
+    kelly = (b * p - q) / b
+    if kelly <= 0:
+        return 2.0  # 음수 Kelly = 전략 자체가 손해 → 최소값
+
+    result = kelly * fraction * 100  # Half Kelly → 퍼센트
+    return round(max(2.0, min(result, 25.0)), 1)  # 2~25% 범위 제한
 
 
 # ─── 손절/익절 체크 ───
@@ -64,10 +117,21 @@ def check_positions(positions: list, config: dict) -> list:
             "quantity": quantity,
         }
 
+        # 트레일링 스톱 계산
+        trailing_trigger = config.get("trailing_stop_trigger", DEFAULT_CONFIG["trailing_stop_trigger"]) / 100
+        trailing_dist = config.get("trailing_stop_distance", DEFAULT_CONFIG["trailing_stop_distance"]) / 100
+
         # 손절 시그널
         if profit_rate <= stop_loss:
             signal["action"] = "SELL_STOP_LOSS"
             signal["reason"] = f"손절선 도달: {profit_rate*100:.1f}% (기준: {stop_loss*100:.1f}%)"
+            signal["urgency"] = "HIGH"
+            signals.append(signal)
+
+        # 트레일링 스톱: 수익이 trigger 이상 찍었다가 distance만큼 하락
+        elif profit_rate >= trailing_trigger and daily_rate <= -trailing_dist:
+            signal["action"] = "SELL_TRAILING_STOP"
+            signal["reason"] = f"트레일링 스톱: 수익 {profit_rate*100:.1f}%에서 당일 -{abs(daily_rate)*100:.1f}% 하락"
             signal["urgency"] = "HIGH"
             signals.append(signal)
 
@@ -381,8 +445,33 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
     breakdown["alphas"] = {"score": round(alpha_score), "max": 30, "detail": alphas}
     total_score += alpha_score
 
-    # 등급 (총 130점 만점 기준)
-    pct = total_score / 130 * 100  # 백분율로 정규화
+    # 6. 시장 상황 보정 (-10 ~ +10점)
+    regime = detect_market_regime(quote)
+    regime_adj = 0
+    if regime == "bull":
+        regime_adj = 5    # 상승장 가점
+    elif regime == "bear":
+        regime_adj = -10  # 하락장 감점 (진입 억제)
+    elif regime == "crisis":
+        regime_adj = -15  # 위기 시 대폭 감점
+    # range = 0 (중립)
+    total_score += regime_adj
+    total_score = max(0, total_score)
+    breakdown["regime"] = {"adjustment": regime_adj, "regime": regime}
+
+    # 7. 추세 필터 (평균회귀 보호)
+    # 모멘텀 알파가 음수(하락추세)인데 평균회귀 알파가 양수(반등 기대)면 경고
+    momentum_val = alphas.get("momentum", {}).get("value", 0) if isinstance(alphas.get("momentum"), dict) else 0
+    mean_rev_val = alphas.get("mean_reversion", {}).get("value", 0) if isinstance(alphas.get("mean_reversion"), dict) else 0
+    trend_warning = None
+    if momentum_val < -0.02 and mean_rev_val > 0.01:
+        trend_warning = "하락추세 내 반등 매수 주의 (falling knife 위험)"
+        total_score -= 5  # 추가 감점
+        total_score = max(0, total_score)
+    breakdown["trend_filter"] = {"warning": trend_warning, "momentum": round(momentum_val, 4)}
+
+    # 등급 (130점 + 보정 기준)
+    pct = total_score / 130 * 100
     if pct >= 70:
         grade = "A"
         recommendation = "STRONG_BUY"
@@ -404,6 +493,8 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
         "score_pct": round(pct, 1),
         "grade": grade,
         "recommendation": recommendation,
+        "regime": regime,
+        "trend_warning": trend_warning,
         "breakdown": breakdown,
         "alphas": {k: v for k, v in alphas.items() if k not in ("composite_score", "composite_max")},
         "current_price": last_price,
@@ -531,6 +622,25 @@ def main():
         quote = json.loads(args.get("quote", "{}"))
         result = compute_alphas(quote)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif command == "kelly":
+        win_rate = float(args.get("win-rate", "0.5"))
+        avg_win = float(args.get("avg-win", "5.0"))
+        avg_loss = float(args.get("avg-loss", "3.0"))
+        fraction = float(args.get("fraction", "0.5"))
+        result = calculate_kelly(win_rate, avg_win, avg_loss, fraction)
+        print(json.dumps({
+            "kelly_full_pct": round(result / fraction, 1) if fraction > 0 else 0,
+            "kelly_fraction_pct": result,
+            "fraction": fraction,
+            "inputs": {"win_rate": win_rate, "avg_win": avg_win, "avg_loss": avg_loss},
+            "recommendation": f"max_position_pct를 {result}%로 설정 권장"
+        }, ensure_ascii=False, indent=2))
+
+    elif command == "regime":
+        quote = json.loads(args.get("quote", "{}"))
+        regime = detect_market_regime(quote)
+        print(json.dumps({"regime": regime, "change_rate": quote.get("change_rate", 0)}, ensure_ascii=False))
 
     else:
         print(json.dumps({"error": f"unknown command: {command}"}))
