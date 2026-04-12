@@ -98,6 +98,26 @@ def score_bar(bar, ref_close, volume, is_kr=False):
     alphas = compute_alphas(o, c, h, l, ref_close)
     alpha_sc = alphas["composite"]
     total = vol_score + mom + price + port + alpha_sc
+
+    # 시장 보정 (데몬과 동일)
+    regime_adj = 0
+    if change_rate >= 0.05 or change_rate <= -0.05:
+        regime_adj = -15  # crisis
+    elif change_rate <= -0.01:
+        regime_adj = -10  # bear
+    elif change_rate >= 0.01:
+        regime_adj = 5    # bull
+    total += regime_adj
+
+    # 추세 필터 (데몬과 동일: 하락추세 내 반등 매수 방지)
+    trend_warning = None
+    momentum_val = alphas.get("momentum", 0)
+    mean_rev_val = alphas.get("mean_rev", 0)
+    if momentum_val < -0.02 and mean_rev_val > 0.01:
+        trend_warning = "falling_knife"
+        total -= 5
+
+    total = max(0, total)
     pct = total / 130 * 100
 
     if pct >= 70: grade = "A"
@@ -108,7 +128,8 @@ def score_bar(bar, ref_close, volume, is_kr=False):
     return {
         "score": round(total, 1), "pct": round(pct, 1), "grade": grade,
         "change_rate": round(change_rate * 100, 2),
-        "breakdown": {"vol": vol_score, "mom": mom, "price": price, "alpha": round(alpha_sc, 1)},
+        "regime_adj": regime_adj, "trend_warning": trend_warning,
+        "breakdown": {"vol": vol_score, "mom": mom, "price": price, "alpha": round(alpha_sc, 1), "regime": regime_adj},
         "alphas": alphas,
     }
 
@@ -161,6 +182,8 @@ def simulate_day(symbols: list, date_str: str = None, market: str = "us",
                  initial_capital: float = 10_000_000,
                  stop_loss_pct: float = -0.03,
                  take_profit_pct: float = 0.07,
+                 trailing_trigger: float = 0.03,
+                 trailing_distance: float = 0.02,
                  max_positions: int = 2,
                  position_pct: float = 0.10,
                  entry_grades: list = None) -> DayResult:
@@ -219,9 +242,11 @@ def simulate_day(symbols: list, date_str: str = None, market: str = "us",
     capital = initial_capital
     positions = {}  # symbol -> Position
     peak_capital = capital
+    peak_prices = {}  # symbol -> 보유 중 최고가 (트레일링용)
     timeline = []
     trades = []
     cumulative_vol = {sym: 0 for sym in all_data}
+    cooldown_until = {}  # symbol -> 재진입 금지 인덱스 (손절 후 6봉 = 30분 쿨다운)
 
     # 장 시작 스크리닝 (첫 30분 관찰 후)
     screened = False
@@ -250,13 +275,18 @@ def simulate_day(symbols: list, date_str: str = None, market: str = "us",
                 "price": round(bar["Close"], 2), "change": sc["change_rate"],
             })
 
-            # ── 보유 중이면 손절/익절 체크 ──
+            # ── 보유 중이면 손절/익절/트레일링 체크 ──
             if sym in positions:
                 pos = positions[sym]
                 current = bar["Close"]
                 pnl = (current - pos.entry_price) / pos.entry_price
                 low_pnl = (bar["Low"] - pos.entry_price) / pos.entry_price
                 high_pnl = (bar["High"] - pos.entry_price) / pos.entry_price
+
+                # 트레일링용 고점 추적
+                if sym not in peak_prices:
+                    peak_prices[sym] = pos.entry_price
+                peak_prices[sym] = max(peak_prices[sym], bar["High"])
 
                 exit_reason = None
                 exit_price = current
@@ -267,6 +297,12 @@ def simulate_day(symbols: list, date_str: str = None, market: str = "us",
                 elif high_pnl >= take_profit_pct:
                     exit_reason = "TAKE_PROFIT"
                     exit_price = pos.entry_price * (1 + take_profit_pct)
+                elif pnl >= trailing_trigger:
+                    # 트레일링 스톱: 고점 대비 distance 만큼 하락
+                    trail_price = peak_prices[sym] * (1 - trailing_distance)
+                    if bar["Low"] <= trail_price:
+                        exit_reason = "TRAILING_STOP"
+                        exit_price = trail_price
 
                 if exit_reason:
                     gross = (exit_price - pos.entry_price) / pos.entry_price
@@ -282,13 +318,21 @@ def simulate_day(symbols: list, date_str: str = None, market: str = "us",
                     trades.append(trade)
                     capital += pnl_amt
                     del positions[sym]
+                    peak_prices.pop(sym, None)
+
+                    # 손절 후 쿨다운 (6봉 = 30분)
+                    if exit_reason == "STOP_LOSS":
+                        cooldown_until[sym] = i + 6
 
                     icon = "🟢" if net > 0 else "🔴"
                     events.append(f"{icon} {sym} {exit_reason} @ {exit_price:.2f} ({net*100:+.2f}%)")
 
             # ── 매수 판단 ──
             elif screened and sym not in positions and len(positions) < max_positions:
-                if sc["grade"] in entry_grades:
+                # 쿨다운 체크 (손절 후 30분)
+                if sym in cooldown_until and i < cooldown_until[sym]:
+                    pass  # 재진입 금지
+                elif sc["grade"] in entry_grades:
                     invest = capital * position_pct
                     qty = max(1, int(invest / bar["Close"]))
                     entry_price = bar["Close"]
