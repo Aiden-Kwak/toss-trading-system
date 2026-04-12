@@ -269,18 +269,19 @@ def compute_alphas(quote: dict) -> dict:
 
 # ─── 매수 시그널 평가 ───
 
-def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
+def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) -> dict:
     """종목의 매수 적합성을 점수(0-100)로 평가합니다.
 
-    v2 재설계: "오늘 사야 하는가"를 판단하는 타이밍 시그널 중심.
-    기존 문제: 대형주가 항상 A등급 → 매일 매수 → 단타가 아님.
+    v3: 기술적 지표(RSI/볼린저/EMA/거래량비율) 통합.
 
     평가 항목:
-    - 방향성 시그널 (0-30점): 알파들이 같은 방향을 가리키는가
-    - 모멘텀 품질 (0-25점): 단순 등락이 아닌 방향의 질
-    - 가격 액션 (0-20점): 캔들 형태, 위치
-    - 시장 컨텍스트 (0-25점): 시장 상황 + 추세 필터
+    - 방향성 시그널 (0-25점): 알파들이 같은 방향을 가리키는가
+    - 모멘텀 품질 (0-20점): 등락률 + RSI 과매도/과매수
+    - 가격 액션 (0-15점): 캔들 형태 + 볼린저 위치
+    - 시장 컨텍스트 (0-20점): 시장 상황 + EMA 추세 + 추세 필터
+    - 기술적 확인 (0-20점): RSI/EMA/볼린저/거래량 복합 시그널
 
+    tech: technical-indicators.py의 analyze_symbol() 결과 (선택)
     여력은 점수가 아닌 gate check (리스크 게이트에서 처리)
     """
     symbol = quote.get("symbol", "")
@@ -305,95 +306,126 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
     momentum_val = alphas.get("momentum", {}).get("value", 0) if isinstance(alphas.get("momentum"), dict) else 0
     mean_rev_val = alphas.get("mean_reversion", {}).get("value", 0) if isinstance(alphas.get("mean_reversion"), dict) else 0
 
+    # 기술적 지표 추출 (있으면 사용, 없으면 None)
+    rsi = tech.get("rsi", {}).get("value") if tech else None
+    bb_pctb = tech.get("bollinger", {}).get("pct_b") if tech else None
+    ema9 = tech.get("ema", {}).get("ema9") if tech else None
+    ema21 = tech.get("ema", {}).get("ema21") if tech else None
+    vol_ratio = tech.get("volume_ratio", {}).get("value") if tech else None
+
     breakdown = {}
     total_score = 0
 
-    # ─── 1. 방향성 시그널 (0-30점) ───
-    # 핵심: 여러 알파가 동시에 "매수"를 가리킬 때만 높은 점수
-    # 알파 동의 카운트: 양수 알파가 몇 개인지
+    # ─── 1. 방향성 시그널 (0-25점) ───
     bullish_count = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v > 0.05)
     bearish_count = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v < -0.05)
 
-    if bullish_count >= 4:
-        direction_score = 30  # 모든 알파 동의 → 강한 매수
-    elif bullish_count >= 3:
-        direction_score = 22  # 3개 동의
-    elif bullish_count >= 2:
-        direction_score = 12  # 2개 동의 (약한 시그널)
-    elif bearish_count >= 3:
-        direction_score = 0   # 대부분 매도 시그널 → 진입 금지
-    else:
-        direction_score = 5   # 혼재 → 불확실
-    breakdown["direction"] = {"score": direction_score, "max": 30, "bullish": bullish_count, "bearish": bearish_count}
+    if bullish_count >= 4: direction_score = 25
+    elif bullish_count >= 3: direction_score = 18
+    elif bullish_count >= 2: direction_score = 10
+    elif bearish_count >= 3: direction_score = 0
+    else: direction_score = 3
+    breakdown["direction"] = {"score": direction_score, "max": 25, "bullish": bullish_count, "bearish": bearish_count}
     total_score += direction_score
 
-    # ─── 2. 모멘텀 품질 (0-25점) ───
-    # 단순 등락률이 아닌: 방향 + 강도 + 거래량 동반 여부
+    # ─── 2. 모멘텀 + RSI (0-20점) ───
     abs_change = abs(change_rate)
-
     if is_kr:
-        sweet_spot = 0.02 <= abs_change <= 0.08  # 한국: 2-8%가 적정
+        sweet_spot = 0.02 <= abs_change <= 0.08
         too_hot = abs_change > 0.15
     else:
-        sweet_spot = 0.015 <= abs_change <= 0.05  # 미국: 1.5-5%가 적정
+        sweet_spot = 0.015 <= abs_change <= 0.05
         too_hot = abs_change > 0.10
 
-    if change_rate > 0 and sweet_spot:
-        mom_quality = 25  # 적정 상승
-    elif change_rate > 0 and not too_hot:
-        mom_quality = 15  # 상승이지만 약하거나 과열 직전
-    elif too_hot:
-        mom_quality = 0   # 과열 (고점 추격 위험)
-    elif abs_change < 0.005:
-        mom_quality = 0   # 보합 (방향 없음 → 진입 이유 없음)
-    elif change_rate < 0 and abs_change < 0.03:
-        mom_quality = 5   # 소폭 하락 (평균회귀 기회 가능)
-    else:
-        mom_quality = 0   # 하락
-    breakdown["momentum"] = {"score": mom_quality, "max": 25, "change_rate": round(change_rate * 100, 2), "market": market_label}
+    if change_rate > 0 and sweet_spot: mom_quality = 15
+    elif change_rate > 0 and not too_hot: mom_quality = 10
+    elif too_hot: mom_quality = 0
+    elif abs_change < 0.005: mom_quality = 0
+    elif change_rate < 0 and abs_change < 0.03: mom_quality = 3
+    else: mom_quality = 0
+
+    # RSI 보정: 과매도면 가점, 과매수면 감점
+    rsi_adj = 0
+    if rsi is not None:
+        if rsi <= 30: rsi_adj = 5   # 과매도 → 반등 기회
+        elif rsi <= 40: rsi_adj = 2
+        elif rsi >= 70: rsi_adj = -5  # 과매수 → 진입 위험
+        elif rsi >= 60: rsi_adj = -2
+    mom_quality = max(0, min(20, mom_quality + rsi_adj))
+    breakdown["momentum"] = {"score": mom_quality, "max": 20, "change_rate": round(change_rate * 100, 2), "rsi": rsi, "rsi_adj": rsi_adj}
     total_score += mom_quality
 
-    # ─── 3. 가격 액션 (0-20점) ───
-    # Alpha#101 (방향 강도) + Alpha#54 (가격 위치) 조합
-    # 강한 양봉(a101>0.5) + 고가 마감(a54>0.7) = 최고 점수
-    if a101 > 0.5 and a54 > 0.7:
-        action_score = 20  # 강한 양봉 + 고가 마감
-    elif a101 > 0.3 and a54 > 0.5:
-        action_score = 15  # 양봉 + 중상위 마감
-    elif a101 > 0 and a54 > 0.4:
-        action_score = 10  # 약한 양봉
-    elif a101 < -0.3:
-        action_score = 0   # 음봉 → 진입 금지
-    else:
-        action_score = 5   # 도지/불확실
-    breakdown["price_action"] = {"score": action_score, "max": 20, "alpha101": round(a101, 3), "alpha54": round(a54, 3)}
+    # ─── 3. 가격 액션 + 볼린저 (0-15점) ───
+    if a101 > 0.5 and a54 > 0.7: action_score = 12
+    elif a101 > 0.3 and a54 > 0.5: action_score = 9
+    elif a101 > 0 and a54 > 0.4: action_score = 6
+    elif a101 < -0.3: action_score = 0
+    else: action_score = 3
+
+    # 볼린저 보정: 하단 근처면 가점, 상단이면 감점
+    bb_adj = 0
+    if bb_pctb is not None:
+        if bb_pctb <= 0.1: bb_adj = 3   # 하단 터치 → 매수 기회
+        elif bb_pctb <= 0.3: bb_adj = 1
+        elif bb_pctb >= 0.9: bb_adj = -3  # 상단 터치 → 과열
+        elif bb_pctb >= 0.8: bb_adj = -1
+    action_score = max(0, min(15, action_score + bb_adj))
+    breakdown["price_action"] = {"score": action_score, "max": 15, "alpha101": round(a101, 3), "bb_pctb": bb_pctb, "bb_adj": bb_adj}
     total_score += action_score
 
-    # ─── 4. 시장 컨텍스트 (0-25점) ───
+    # ─── 4. 시장 컨텍스트 + EMA (0-20점) ───
     regime = detect_market_regime(quote)
     trend_warning = None
 
-    # 시장 상황
-    if regime == "bull":
-        context_score = 20
-    elif regime == "range":
-        context_score = 10  # 보합 → 중립 (기존엔 모두 여기에 빠져서 높았음)
-    elif regime == "bear":
-        context_score = 0   # 하락 → 진입 금지
-    else:  # crisis
-        context_score = 0
+    if regime == "bull": context_score = 15
+    elif regime == "range": context_score = 8
+    elif regime == "bear": context_score = 0
+    else: context_score = 0  # crisis
 
-    # 추세 필터: 하락추세 내 반등 매수 방지
+    # EMA 크로스 보정
+    ema_adj = 0
+    if ema9 is not None and ema21 is not None:
+        if ema9 > ema21: ema_adj = 5   # 골든크로스 → 상승 추세
+        elif ema9 < ema21: ema_adj = -5  # 데드크로스 → 하락 추세
+
+    # 추세 필터
     if momentum_val < -0.02 and mean_rev_val > 0.01:
         trend_warning = "하락추세 내 반등 매수 주의 (falling knife)"
-        context_score = max(0, context_score - 10)
+        context_score = max(0, context_score - 8)
 
-    breakdown["context"] = {"score": context_score, "max": 25, "regime": regime, "trend_warning": trend_warning}
+    context_score = max(0, min(20, context_score + ema_adj))
+    breakdown["context"] = {"score": context_score, "max": 20, "regime": regime, "ema_cross": "golden" if ema_adj > 0 else "death" if ema_adj < 0 else "none", "trend_warning": trend_warning}
     total_score += context_score
+
+    # ─── 5. 기술적 확인 (0-20점) — tech 데이터 있을 때만 ───
+    tech_score = 0
+    if tech:
+        # RSI 과매도 + EMA 골든크로스 + 볼린저 하단 = 강한 매수 시그널
+        signals = 0
+        if rsi is not None and rsi <= 35: signals += 1
+        if ema9 is not None and ema21 is not None and ema9 > ema21: signals += 1
+        if bb_pctb is not None and bb_pctb <= 0.3: signals += 1
+        if vol_ratio is not None and vol_ratio >= 1.5: signals += 1
+
+        if signals >= 4: tech_score = 20  # 모든 기술적 지표 동의
+        elif signals >= 3: tech_score = 15
+        elif signals >= 2: tech_score = 8
+        elif signals >= 1: tech_score = 3
+        else: tech_score = 0
+
+        # 역방향 시그널: RSI 과매수 + 데드크로스 = 강한 패널티
+        anti_signals = 0
+        if rsi is not None and rsi >= 70: anti_signals += 1
+        if ema9 is not None and ema21 is not None and ema9 < ema21: anti_signals += 1
+        if bb_pctb is not None and bb_pctb >= 0.9: anti_signals += 1
+        if anti_signals >= 2: tech_score = 0  # 역방향 → 0점
+
+    breakdown["technical"] = {"score": tech_score, "max": 20, "available": tech is not None}
+    total_score += tech_score
 
     # ─── 등급 산정 (100점 만점) ───
     total_score = max(0, total_score)
-    pct = total_score / 100 * 100  # 이미 100점 만점이라 pct = total
+    pct = total_score
 
     if pct >= 75:
         grade = "A"
@@ -531,7 +563,8 @@ def main():
     elif command == "evaluate-buy":
         quote = json.loads(args.get("quote", "{}"))
         portfolio = json.loads(args.get("portfolio", "{}"))
-        result = evaluate_buy(quote, portfolio, config)
+        tech = json.loads(args.get("tech", "null"))
+        result = evaluate_buy(quote, portfolio, config, tech=tech)
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     elif command == "risk-gate":

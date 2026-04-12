@@ -221,7 +221,20 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             if not isinstance(quote, dict) or "error" in quote:
                 self._json_response(quote)
                 return
-            result = run_signal_engine("evaluate-buy", quote=quote, portfolio=summary)
+            # 기술적 지표 가져오기 (토스 API, 선택적)
+            tech = None
+            try:
+                product_code = quote.get("product_code", symbol)
+                mkt = "kr" if quote.get("market_code", "") in ("KSP", "KSQ") else "us"
+                tech_result = subprocess.run(
+                    [PYTHON, str(SCRIPTS_DIR / "technical-indicators.py"), "analyze", "--symbol", product_code, "--market", mkt],
+                    capture_output=True, text=True, timeout=10
+                )
+                if tech_result.returncode == 0:
+                    tech = json.loads(tech_result.stdout)
+            except Exception:
+                pass
+            result = run_signal_engine("evaluate-buy", quote=quote, portfolio=summary, **({} if tech is None else {"tech": tech}))
             self._json_response(result)
 
         elif path == "/api/signal/compute-alphas":
