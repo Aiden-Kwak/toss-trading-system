@@ -116,12 +116,8 @@ def classify_stock(closes, volumes=None):
     else: volatility = "low"
 
     # 전략 결정 — 모든 상황에서 수익 기회 탐색
-    if regime == "uptrend" and volatility == "low":
-        strategy, ok = "pullback_buy", True    # 풀백 매수 (저변동 상승)
-    elif regime == "uptrend" and volatility == "medium":
-        strategy, ok = "pullback_buy", True    # 중변동 상승도 풀백 매수 (모멘텀→풀백으로 변경)
-    elif regime == "uptrend":
-        strategy, ok = "momentum", True        # 고변동 상승만 모멘텀
+    if regime == "uptrend":
+        strategy, ok = "trend_follow", True    # 추세 추종: 사서 추세 꺾일 때까지 보유
     elif regime == "downtrend" and volatility == "low":
         strategy, ok = "avoid", False          # 느린 하락 → 할 게 없음
     elif regime == "downtrend":
@@ -452,10 +448,19 @@ def run_backtest(
                 entry_grade=pending_entry["grade"],
                 entry_score=pending_entry["score"],
             )
-            # 동적 손익절 + 보유일을 trade에 저장
-            current_trade._dynamic_sl = dynamic_sl
+            # 동적 손익절 + 보유일
+            strategy_type = pending_entry.get("strategy", "momentum")
+            if strategy_type == "trend_follow":
+                # 추세 추종: 넓은 손절 (ATR x 2), 익절 없음 (추세 파괴로 청산)
+                if atr_val > 0:
+                    current_trade._dynamic_sl = max(stop_loss * 2, -(atr_val * 2 / entry_price))
+                else:
+                    current_trade._dynamic_sl = stop_loss * 2  # 기본 손절의 2배
+                current_trade._dynamic_tp = 9.99  # 사실상 익절 없음
+            else:
+                current_trade._dynamic_sl = dynamic_sl
+                current_trade._dynamic_tp = dynamic_tp
             current_trade._dynamic_hold = pending_entry.get("hold_days", max_hold_days)
-            current_trade._dynamic_tp = dynamic_tp
             in_position = True
             pending_entry = None
 
@@ -476,12 +481,23 @@ def run_backtest(
             eff_sl = getattr(current_trade, '_dynamic_sl', stop_loss)
             eff_tp = getattr(current_trade, '_dynamic_tp', take_profit)
 
+            is_trend_follow = getattr(current_trade, '_dynamic_hold', max_hold_days) >= 999
+
             if low_pnl <= eff_sl:
                 exit_reason = "STOP_LOSS"
                 exit_price = current_trade.entry_price * (1 + eff_sl)
-            elif high_pnl >= eff_tp:
+            elif not is_trend_follow and high_pnl >= eff_tp:
+                # 추세 추종은 고정 익절 안 함 (추세 타는 중)
                 exit_reason = "TAKE_PROFIT"
                 exit_price = current_trade.entry_price * (1 + eff_tp)
+            elif is_trend_follow:
+                # 추세 파괴 시 청산: EMA 데드크로스 또는 종가 < EMA21
+                if history:
+                    curr_ema9 = _compute_ema(history["closes"], 9)
+                    curr_ema21 = _compute_ema(history["closes"], 21)
+                    if curr_ema9 < curr_ema21:
+                        exit_reason = "TREND_BREAK"
+                        exit_price = row["Close"]
             elif days_held >= getattr(current_trade, '_dynamic_hold', max_hold_days):
                 exit_reason = "MAX_HOLD"
                 exit_price = row["Close"]
@@ -503,12 +519,25 @@ def run_backtest(
 
         # 포지션 없고 시그널 발생 → 다음 날 매수 예약
         if not in_position and not pending_entry:
+            # [Phase 1] 종목 분류
+            stock_class = classify_stock(history["closes"]) if history else {"strategy": "momentum", "daytrade_ok": True, "regime": "unknown"}
+            strategy = stock_class["strategy"]
+
+            # 추세 추종은 등급 무관 — 골든크로스 + 풀백이면 진입
+            if strategy == "trend_follow":
+                ema_cross = score.get("ema_cross")
+                day_change = score.get("change_rate", 0)
+                if ema_cross == "golden" and day_change <= 0:
+                    # 골든크로스 유지 + 당일 소폭 하락(풀백) → 진입
+                    pending_entry = {
+                        "date": date_str, "grade": "T", "score": score["total"],
+                        "strategy": "trend_follow", "hold_days": 999,
+                    }
+                continue  # trend_follow는 아래 등급 체크 스킵
+
             if grade in entry_grades:
-                # [Phase 1] 종목 분류 필터
-                if history:
-                    stock_class = classify_stock(history["closes"])
-                    if not stock_class["daytrade_ok"]:
-                        continue  # 단타 부적합 (상승+저변동 or 하락+저변동)
+                if not stock_class["daytrade_ok"]:
+                    continue
 
                 # 다일 추세 필터
                 if i >= 5:
@@ -526,28 +555,25 @@ def run_backtest(
                     if rsi_val is not None and rsi_val > 40 and (bb_val is None or bb_val > 0.3):
                         continue
 
-                elif strategy == "pullback_buy":
-                    # 풀백 매수: 상승 추세에서 일시 하락(풀백)할 때만 매수
-                    # 조건: 당일 하락 + RSI 50 이하 + 골든크로스 유지
-                    day_change = score.get("change_rate", 0)
-                    if day_change >= 0:
-                        continue  # 오르고 있으면 진입 안 함 (풀백 아님)
-                    if rsi_val is not None and rsi_val > 50:
-                        continue  # RSI 50 이상이면 아직 과매수 영역
+                elif strategy == "trend_follow":
+                    # 추세 추종: 골든크로스 + 풀백(일시 하락)일 때 매수
+                    # 이후 추세 꺾일 때까지 무기한 보유
                     ema_cross = score.get("ema_cross")
-                    if ema_cross == "death":
-                        continue  # 추세 꺾이면 풀백이 아니라 하락 전환
+                    if ema_cross != "golden":
+                        continue  # 골든크로스가 아니면 진입 안 함
+                    day_change = score.get("change_rate", 0)
+                    if day_change > 1.0:
+                        continue  # 이미 많이 오른 날은 추격 안 함
 
                 elif strategy == "momentum":
-                    # 모멘텀: 기본 A/B등급이면 진입 (이미 grade 체크됨)
                     pass
 
                 # [Phase 2] 보유 기간 동적화
                 dynamic_hold = max_hold_days
                 if history:
                     ema_cross = score.get("ema_cross")
-                    if strategy == "pullback_buy":
-                        dynamic_hold = max(max_hold_days, 3)  # 풀백 매수는 반등까지 보유 (최소 3일)
+                    if strategy == "trend_follow":
+                        dynamic_hold = 999  # 추세 추종: 무기한 보유 (추세 파괴 시 청산)
                     elif ema_cross == "golden" and stock_class["regime"] == "uptrend":
                         dynamic_hold = max(max_hold_days, 3)
                     elif ema_cross == "death":
