@@ -115,13 +115,15 @@ def classify_stock(closes, volumes=None):
     elif daily_vol >= 1.5: volatility = "medium"
     else: volatility = "low"
 
-    # 전략 결정
+    # 전략 결정 — 모든 상황에서 수익 기회 탐색
     if regime == "uptrend" and volatility == "low":
-        strategy, ok = "hold", False           # B&H가 나음
+        strategy, ok = "pullback_buy", True    # 풀백 매수 (저변동 상승)
+    elif regime == "uptrend" and volatility == "medium":
+        strategy, ok = "pullback_buy", True    # 중변동 상승도 풀백 매수 (모멘텀→풀백으로 변경)
     elif regime == "uptrend":
-        strategy, ok = "momentum", True        # 모멘텀 단타
+        strategy, ok = "momentum", True        # 고변동 상승만 모멘텀
     elif regime == "downtrend" and volatility == "low":
-        strategy, ok = "avoid", False          # 느린 하락
+        strategy, ok = "avoid", False          # 느린 하락 → 할 게 없음
     elif regime == "downtrend":
         strategy, ok = "mean_reversion", True  # 반등 단타
     elif regime == "sideways":
@@ -514,24 +516,42 @@ def run_backtest(
                     if down_days >= 4:
                         continue
 
-                # [Phase 3] 전략 분기: 종목 상태에 따라 진입 기준 차별화
+                # [Phase 3] 전략 분기
                 strategy = stock_class["strategy"] if history else "momentum"
+                rsi_val = score.get("rsi")
+                bb_val = score.get("bb_pctb")
 
                 if strategy == "mean_reversion":
-                    # 평균회귀: RSI 과매도 또는 볼린저 하단일 때만 진입
-                    rsi_val = score.get("rsi")
-                    bb_val = score.get("bb_pctb")
+                    # 평균회귀: RSI 과매도 또는 볼린저 하단일 때만
                     if rsi_val is not None and rsi_val > 40 and (bb_val is None or bb_val > 0.3):
-                        continue  # RSI 과매도도 아니고 볼린저 하단도 아님 → 스킵
+                        continue
+
+                elif strategy == "pullback_buy":
+                    # 풀백 매수: 상승 추세에서 일시 하락(풀백)할 때만 매수
+                    # 조건: 당일 하락 + RSI 50 이하 + 골든크로스 유지
+                    day_change = score.get("change_rate", 0)
+                    if day_change >= 0:
+                        continue  # 오르고 있으면 진입 안 함 (풀백 아님)
+                    if rsi_val is not None and rsi_val > 50:
+                        continue  # RSI 50 이상이면 아직 과매수 영역
+                    ema_cross = score.get("ema_cross")
+                    if ema_cross == "death":
+                        continue  # 추세 꺾이면 풀백이 아니라 하락 전환
+
+                elif strategy == "momentum":
+                    # 모멘텀: 기본 A/B등급이면 진입 (이미 grade 체크됨)
+                    pass
 
                 # [Phase 2] 보유 기간 동적화
                 dynamic_hold = max_hold_days
                 if history:
                     ema_cross = score.get("ema_cross")
-                    if ema_cross == "golden" and stock_class["regime"] == "uptrend":
-                        dynamic_hold = max(max_hold_days, 3)  # 상승 추세면 최소 3일 보유
+                    if strategy == "pullback_buy":
+                        dynamic_hold = max(max_hold_days, 3)  # 풀백 매수는 반등까지 보유 (최소 3일)
+                    elif ema_cross == "golden" and stock_class["regime"] == "uptrend":
+                        dynamic_hold = max(max_hold_days, 3)
                     elif ema_cross == "death":
-                        dynamic_hold = 1  # 데드크로스면 1일만
+                        dynamic_hold = 1
 
                 pending_entry = {
                     "date": date_str,
