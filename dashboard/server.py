@@ -381,6 +381,14 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=TOSS_ENV)
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
 
+        elif path == "/api/backtest/portfolio":
+            syms = params.get("symbols", "TSLA,NVDA,AAPL,MSFT,GOOG,META")
+            cmd = [PYTHON, str(SCRIPTS_DIR / "portfolio-backtest.py"), "--symbols", syms, "--output", "json"]
+            for p_key in ["period", "capital", "max-positions", "stop-loss", "take-profit", "max-hold", "grades", "cost"]:
+                if params.get(p_key): cmd.extend([f"--{p_key}", params[p_key]])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=TOSS_ENV)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
+
         elif path == "/api/backtest/period":
             syms = params.get("symbols", "TSLA")
             period = params.get("period", "6mo")

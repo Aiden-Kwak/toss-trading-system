@@ -256,6 +256,23 @@ button.save:hover { opacity:.85; }
     </div>
     <div id="btResult" style="margin-top:16px"><div class="loading">종목을 입력하고 백테스트를 실행하세요</div></div>
   </div>
+
+  <!-- Portfolio Backtest -->
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">포트폴리오 백테스트 (다종목 병렬 운영)</span></div>
+    <div class="input-row" style="margin-top:0">
+      <input type="text" id="pfSymbols" value="TSLA,NVDA,AAPL,MSFT,GOOG,META,NFLX,AMD" placeholder="종목 (쉼표 구분)" style="min-width:300px">
+      <select id="pfPeriod" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="3mo">3개월</option><option value="6mo" selected>6개월</option><option value="1y">1년</option></select>
+      <button class="primary" onclick="runPortfolioBacktest()">포트폴리오 백테스트</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px">
+      <div class="setting-item"><div class="setting-label">초기 자본</div><input class="setting-input" type="number" id="pfCapital" value="1000000" step="100000"><div class="setting-unit">원</div></div>
+      <div class="setting-item"><div class="setting-label">동시 포지션</div><input class="setting-input" type="number" id="pfMaxPos" value="2" min="1" max="5"><div class="setting-unit">종목</div></div>
+      <div class="setting-item"><div class="setting-label">손절 / 익절</div><div style="display:flex;gap:4px"><input class="setting-input" type="number" id="pfSL" value="-2" step="0.5" style="width:50%"><input class="setting-input" type="number" id="pfTP" value="6" step="0.5" style="width:50%"></div><div class="setting-unit">%</div></div>
+      <div class="setting-item"><div class="setting-label">최대 보유 / 등급</div><div style="display:flex;gap:4px"><input class="setting-input" type="number" id="pfHold" value="1" min="1" max="10" style="width:40%"><select class="setting-input" id="pfGrades" style="width:60%"><option value="A">A만</option><option value="A,B">A+B</option></select></div></div>
+    </div>
+    <div id="pfResult" style="margin-top:16px"><div class="loading">종목과 설정을 입력하고 실행하세요</div></div>
+  </div>
 </div>
 </div>
 
@@ -671,6 +688,59 @@ async function runDaySim() {
       html += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><strong>${sym}</strong>: 점수 ${Math.min(...vals).toFixed(0)}~${Math.max(...vals).toFixed(0)} | A=${grades.filter(g=>g==='A').length} B=${grades.filter(g=>g==='B').length} C=${grades.filter(g=>g==='C').length} D=${grades.filter(g=>g==='D').length}</div>`;
     }
   }
+  panel.innerHTML = html;
+}
+
+// Portfolio Backtest
+async function runPortfolioBacktest() {
+  const syms = document.getElementById('pfSymbols').value.trim(); if(!syms) return;
+  const period = document.getElementById('pfPeriod').value;
+  const capital = document.getElementById('pfCapital').value;
+  const maxPos = document.getElementById('pfMaxPos').value;
+  const sl = parseFloat(document.getElementById('pfSL').value) / 100;
+  const tp = parseFloat(document.getElementById('pfTP').value) / 100;
+  const hold = document.getElementById('pfHold').value;
+  const grades = document.getElementById('pfGrades').value;
+  const panel = document.getElementById('pfResult');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> 포트폴리오 백테스트 중 (최대 3분)...</div>';
+
+  const r = await fetch(API+`/api/backtest/portfolio?symbols=${syms}&period=${period}&capital=${capital}&max-positions=${maxPos}&stop-loss=${sl}&take-profit=${tp}&max-hold=${hold}&grades=${grades}`);
+  const d = await r.json();
+  if (d.error) { panel.innerHTML=`<div class="loading">${d.error}</div>`; return; }
+
+  let html = `<div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">
+    <div class="stat-mini"><div class="stat-mini-value ${d.total_return_pct>=0?'positive':'negative'}">${d.total_return_pct>0?'+':''}${d.total_return_pct}%</div><div class="stat-mini-label">전략 수익</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.buy_and_hold_pct>0?'+':''}${d.buy_and_hold_pct}%</div><div class="stat-mini-label">Buy & Hold</div></div>
+    <div class="stat-mini"><div class="stat-mini-value ${d.excess_pct>=0?'positive':'negative'}">${d.excess_pct>0?'+':''}${d.excess_pct}%</div><div class="stat-mini-label">초과수익</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.max_drawdown_pct}%</div><div class="stat-mini-label">최대 DD</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.win_rate}%</div><div class="stat-mini-label">승률</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.sharpe}</div><div class="stat-mini-label">샤프</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.total_trades}</div><div class="stat-mini-label">거래</div></div>
+    <div class="stat-mini"><div class="stat-mini-value">${d.final_capital?.toLocaleString()}원</div><div class="stat-mini-label">최종 자본</div></div>
+  </div>`;
+
+  // 종목별 성과
+  if (d.by_symbol && Object.keys(d.by_symbol).length > 0) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">종목별 성과</div>';
+    const sorted = Object.entries(d.by_symbol).sort((a,b) => b[1].total_pnl - a[1].total_pnl);
+    sorted.forEach(([sym, data]) => {
+      const wr = data.trades > 0 ? (data.wins/data.trades*100).toFixed(0) : 0;
+      const barW = Math.max(2, Math.min(100, Math.abs(data.total_pnl) * 5));
+      const barC = data.total_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      html += `<div class="pattern-row"><span class="pattern-label">${sym}</span><div class="pattern-bar" style="width:${barW}%;background:${barC}"></div><span class="pattern-value">${data.trades}건 | 승률 ${wr}% | ${data.total_pnl>0?'+':''}${data.total_pnl.toFixed(1)}%</span></div>`;
+    });
+  }
+
+  // 최근 거래
+  if (d.trades?.length) {
+    html += '<div style="font-size:12px;color:var(--text2);margin:12px 0 6px">최근 거래 (10건)</div>';
+    html += '<table><tr><th>종목</th><th>진입</th><th>청산</th><th>등급</th><th>진입가</th><th>청산가</th><th>수익률</th><th>사유</th></tr>';
+    d.trades.slice(-10).forEach(t => {
+      html += `<tr><td><strong>${t.symbol}</strong></td><td class="mono">${t.entry_date}</td><td class="mono">${t.exit_date}</td><td>${t.grade}</td><td class="mono">${t.entry_price}</td><td class="mono">${t.exit_price}</td><td class="${t.pnl_pct>=0?'positive':'negative'} mono">${t.pnl_pct>0?'+':''}${t.pnl_pct}%</td><td style="font-size:11px">${t.exit_reason}</td></tr>`;
+    });
+    html += '</table>';
+  }
+
   panel.innerHTML = html;
 }
 
