@@ -353,21 +353,25 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict) -> dict:
     breakdown["price_position"] = {"score": price_score, "max": 25, "value": round(last_price, 2), "market": market_label}
     total_score += price_score
 
-    # 4. 포트폴리오 적합성 (0-20)
-    total_asset = portfolio.get("total_asset_amount", 0)
+    # 4. 포트폴리오 적합성 (0-20) — 주문가능금액 기준
     orderable = portfolio.get("orderable_amount_krw", 0)
-    max_position_pct = config.get("max_position_pct", DEFAULT_CONFIG["max_position_pct"])
 
-    if total_asset > 0:
-        max_invest = total_asset * max_position_pct / 100
-        if orderable >= max_invest:
-            port_score = 20  # 여력 충분
-        elif orderable >= max_invest * 0.5:
-            port_score = 10  # 여력 부족
+    # 현재가 기준 최소 1주 매수 가능한지
+    if last_price > 0 and orderable >= last_price:
+        # 몇 주나 살 수 있는지로 점수
+        buyable_qty = orderable / last_price
+        if buyable_qty >= 5:
+            port_score = 20  # 5주 이상 가능
+        elif buyable_qty >= 2:
+            port_score = 15  # 2~4주
+        elif buyable_qty >= 1:
+            port_score = 10  # 1주만 가능
         else:
-            port_score = 0   # 여력 없음
+            port_score = 0
+    elif orderable > 0:
+        port_score = 5  # 돈은 있지만 1주도 못 삼
     else:
-        port_score = 0
+        port_score = 0   # 주문가능금액 0
     breakdown["portfolio_fit"] = {"score": port_score, "max": 20, "value": orderable}
     total_score += port_score
 

@@ -434,8 +434,16 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         if price <= 0:
             continue
 
-        # 포지션 사이징: 총자산의 max_position_pct%
-        max_invest = total_asset * config.get("max_position_pct", 10) / 100
+        # 포지션 사이징: 주문가능금액 기준
+        orderable = 0
+        if isinstance(summary, dict) and not summary.get("_error"):
+            orderable = summary.get("orderable_amount_krw", 0)
+
+        if orderable < price:
+            log(f"  {sym} 주문가능금액 부족 ({orderable:,.0f}원 < {price:,.0f}원) → 스킵")
+            continue
+
+        max_invest = min(orderable, total_asset * config.get("max_position_pct", 10) / 100)
         qty = max(1, int(max_invest / price))
 
         execute_buy(sym, price, qty, state, dry_run)
