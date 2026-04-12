@@ -307,15 +307,17 @@ async function checkAuth() { try { const r = await fetch(API+'/api/auth/status')
 
 // Summary
 async function loadSummary() {
+  try {
   const r = await fetch(API+'/api/account/summary'); const d = await r.json();
   if (d.maintenance) checkMaintenance();
-  if (d.error) { document.getElementById('summaryGrid').innerHTML = `<div class="loading" style="${d.maintenance?'color:var(--yellow)':''}">&#9888; ${d.error}</div>`; return; }
+  if (d.error) { document.getElementById('summaryGrid').innerHTML = `<div class="loading" style="${d.maintenance?'color:var(--yellow)':'color:var(--red)'}">&#9888; ${d.error || '세션 만료 - 재로그인 필요'}</div>`; return; }
   const us=d.markets?.us||{}, kr=d.markets?.kr||{};
   document.getElementById('summaryGrid').innerHTML = `
     <div class="summary-item"><div class="summary-label">총 자산</div><div class="summary-value">${fmt(d.total_asset_amount)}원</div></div>
     <div class="summary-item"><div class="summary-label">평가 수익</div><div class="summary-value ${pctClass(d.profit_rate)}">${fmt(d.evaluated_profit_amount)}원</div><div class="summary-sub ${pctClass(d.profit_rate)}">${pct(d.profit_rate)}</div></div>
     <div class="summary-item"><div class="summary-label">미국주식</div><div class="summary-value">${fmt(us.evaluated_amount)}원</div><div class="summary-sub ${pctClass(us.profit_rate)}">${pct(us.profit_rate)}</div></div>
     <div class="summary-item"><div class="summary-label">주문 가능</div><div class="summary-value">${fmt(d.orderable_amount_krw)}원</div></div>`;
+  } catch(e) { document.getElementById('summaryGrid').innerHTML = `<div class="loading" style="color:var(--red)">&#9888; 연결 실패 - 세션 만료 또는 네트워크 오류</div>`; }
 }
 
 // Positions
