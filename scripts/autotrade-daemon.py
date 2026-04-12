@@ -376,17 +376,21 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         log(f"  장 휴장 ({market}). 스킵.")
         return True  # 에러는 아님
 
-    # 4. 일일 손실 한도 체크
+    # 4. 일일 손실 한도 체크 (데몬 운용 금액 기준, 보호종목 무관)
     total_asset = 0
+    orderable_krw = 0
     summary = run_tossctl("account", "summary")
     if isinstance(summary, dict) and not summary.get("_error"):
         total_asset = summary.get("total_asset_amount", 0)
-    if total_asset > 0:
-        loss_pct = state.today_pnl / total_asset * 100
+        orderable_krw = summary.get("orderable_amount_krw", 0)
+    # 분모: 데몬이 운용하는 규모만 (주문가능금액 + 오늘 실현 손익)
+    daemon_capital = orderable_krw + abs(state.today_pnl)
+    if daemon_capital > 0:
+        loss_pct = state.today_pnl / daemon_capital * 100
         limit = config.get("daily_loss_limit_pct", -2.0)
         if loss_pct <= limit:
             state.status = DaemonStatus.PAUSED_LOSS_LIMIT
-            log(f"  일일 손실 한도 도달: {loss_pct:.2f}% (한도: {limit}%)")
+            log(f"  일일 손실 한도 도달: {loss_pct:.2f}% (한도: {limit}%, 운용금: {daemon_capital:,.0f}원)")
             send_notification("거래 중단", f"일일 손실 {loss_pct:.1f}%로 한도 도달")
             return False
 

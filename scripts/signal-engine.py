@@ -429,9 +429,11 @@ def risk_gate(portfolio: dict, config: dict, today_pnl: float = 0, active_positi
     all_passed = True
     blocked_reason = None
 
-    # 1. 일일 손실 한도
-    if total_asset > 0:
-        daily_loss_rate = (today_pnl / total_asset) * 100
+    # 1. 일일 손실 한도 (주문가능금액 + 데몬 투입금 기준, 보호종목 제외)
+    # 분모: 주문가능금액 기준으로 데몬이 운용하는 규모만 반영
+    daemon_capital = orderable + abs(today_pnl)  # 현재 여력 + 오늘 실현 손익
+    if daemon_capital > 0:
+        daily_loss_rate = (today_pnl / daemon_capital) * 100
     else:
         daily_loss_rate = 0
 

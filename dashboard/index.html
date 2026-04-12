@@ -596,7 +596,7 @@ async function loadSettings() {
     {key:'max_position_pct', label:'1종목 최대 비중', unit:'% (주문가능금액 대비)', type:'number', step:1, min:1, max:100},
     {key:'stop_loss_pct', label:'손절선', unit:'% (진입가 대비)', type:'number', step:0.5, min:-20, max:0},
     {key:'take_profit_pct', label:'익절선', unit:'% (진입가 대비)', type:'number', step:0.5, min:0, max:50},
-    {key:'daily_loss_limit_pct', label:'일일 최대 손실', unit:'% (총자산 대비)', type:'number', step:0.5, min:-20, max:0},
+    {key:'daily_loss_limit_pct', label:'일일 최대 손실', unit:'% (데몬 운용금 대비, 보호종목 무관)', type:'number', step:0.5, min:-20, max:0},
     {key:'cooldown_after_consecutive_losses', label:'연속 손절 냉각', unit:'회 연속 손절 후 냉각', type:'number', step:1, min:1, max:10},
   ];
 
