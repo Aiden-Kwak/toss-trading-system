@@ -435,15 +435,20 @@ async function resolveSymbols(input, market) {
     if (s.includes('.KS') || s.includes('.KQ') || (market !== 'kr' && /^[A-Z]+$/.test(s))) {
       resolved.push(s); continue;
     }
-    // 한국 종목이면 서버에서 resolve
-    if (market === 'kr' || /[가-힣]/.test(s) || /^\d{6}$/.test(s)) {
+    // 한글 종목명이면 안내 메시지
+    if (/[가-힣]/.test(s)) {
+      alert(`"${s}"는 종목명입니다.\n종목코드(6자리 숫자)로 입력해주세요.\n예: 삼성전자→005930, 이노인스트루먼트→215790`);
+      resolved.push(s); continue;
+    }
+    // 한국 종목코드면 서버에서 resolve (코스피/코스닥 자동 판별)
+    if (market === 'kr' || /^\d{6}$/.test(s)) {
       try {
         const r = await fetch(API + `/api/resolve-kr?q=${encodeURIComponent(s)}`);
         const d = await r.json();
         const items = Array.isArray(d) ? d : [d];
         for (const item of items) {
           if (item.found && item.yahoo) resolved.push(item.yahoo);
-          else resolved.push(s); // 실패 시 원본
+          else resolved.push(s);
         }
       } catch { resolved.push(s); }
     } else {
