@@ -117,6 +117,29 @@ def compute_daily_score(row, prev_close, volume, is_kr=False):
     alpha_score = alphas["composite"]
 
     total = vol_score + mom_score + price_score + port_score + alpha_score
+
+    # 6. 시장 보정 (signal-engine/데몬과 동일)
+    regime_adj = 0
+    if abs(change_rate) >= 0.05:
+        regime_adj = -15  # crisis
+        regime = "crisis"
+    elif change_rate <= -0.01:
+        regime_adj = -10  # bear
+        regime = "bear"
+    elif change_rate >= 0.01:
+        regime_adj = 5    # bull
+        regime = "bull"
+    else:
+        regime = "range"
+    total += regime_adj
+
+    # 7. 추세 필터 (하락추세 내 반등 매수 방지)
+    trend_warning = None
+    if alphas["momentum"] < -0.02 and alphas["mean_reversion"] > 0.01:
+        trend_warning = "falling_knife"
+        total -= 5
+
+    total = max(0, total)
     pct = total / 130 * 100
 
     if pct >= 70: grade = "A"
@@ -128,6 +151,9 @@ def compute_daily_score(row, prev_close, volume, is_kr=False):
         "total": round(total, 1),
         "pct": round(pct, 1),
         "grade": grade,
+        "regime": regime,
+        "regime_adj": regime_adj,
+        "trend_warning": trend_warning,
         "volume": vol_score,
         "momentum": mom_score,
         "price": price_score,
