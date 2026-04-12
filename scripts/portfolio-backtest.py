@@ -212,7 +212,7 @@ def run_portfolio_backtest(
         date_str = date.strftime("%Y-%m-%d")
         events = []
 
-        # 각 종목 채점
+        # 각 종목 채점 + 일일 스크리닝
         day_scores = {}
         for sym, df in all_data.items():
             if date not in df.index:
@@ -223,8 +223,19 @@ def run_portfolio_backtest(
             row = df.iloc[idx]
             prev = df.iloc[idx - 1]["Close"]
             sc = score_day(row, prev, ".KS" in sym or ".KQ" in sym)
+
+            # 일일 스크리닝: 거래량 급증 감지
+            vol = row.get("Volume", 0)
+            avg_vol = df.iloc[max(0,idx-20):idx]["Volume"].mean() if idx >= 2 else vol
+            vol_ratio = vol / avg_vol if avg_vol > 0 else 1.0
+            sc["vol_ratio"] = round(vol_ratio, 2)
+
+            # 스크리닝 통과 조건: 거래량 평소 0.3배 이상 (너무 적으면 유동성 부족)
+            if vol_ratio < 0.3 and sym not in positions:
+                continue  # 거래량 너무 적은 날은 스킵
+
             day_scores[sym] = {**sc, "close": row["Close"], "open": row["Open"],
-                               "high": row["High"], "low": row["Low"]}
+                               "high": row["High"], "low": row["Low"], "vol_ratio": vol_ratio}
 
         # 1. 보유 포지션 청산 체크
         for sym in list(positions.keys()):
@@ -356,7 +367,7 @@ def run_portfolio_backtest(
             if is_uptrend:
                 # 추세추종: 골든크로스 + 당일 과열 아닌 경우 → 등급 무관
                 if sc["change"] <= 2.0:  # 2% 이하면 진입 (급등일만 제외)
-                    candidates.append({"sym": sym, "grade": "T", "score": 99, "strategy": "trend_follow", "max_hold": 999})
+                    candidates.append({"sym": sym, "grade": "T", "score": 99, "strategy": "trend_follow", "max_hold": 999, "vol_ratio": sc.get("vol_ratio", 1)})
             else:
                 # 단타: 등급 기반
                 if sc["grade"] in entry_grades:
@@ -364,10 +375,14 @@ def run_portfolio_backtest(
                         down = sum(1 for j in range(idx - 4, idx + 1) if sym_df.iloc[j]["Close"] < sym_df.iloc[j - 1]["Close"])
                         if down >= 4:
                             continue
-                    candidates.append({"sym": sym, "grade": sc["grade"], "score": sc["score"], "strategy": "daytrade", "max_hold": max_hold})
+                    candidates.append({"sym": sym, "grade": sc["grade"], "score": sc["score"], "strategy": "daytrade", "max_hold": max_hold, "vol_ratio": sc.get("vol_ratio", 1)})
 
         # 우선순위: 등급 → 점수
-        candidates.sort(key=lambda x: (-{"A": 3, "B": 2, "C": 1, "D": 0}.get(x["grade"], 0), -x["score"]))
+        candidates.sort(key=lambda x: (
+            -{"T": 4, "A": 3, "B": 2, "C": 1, "D": 0}.get(x["grade"], 0),
+            -x.get("vol_ratio", 1),
+            -x["score"],
+        ))
         for c in candidates[:max_positions]:
             pending[c["sym"]] = {"grade": c["grade"], "score": c["score"], "date": date_str, "strategy": c.get("strategy", "daytrade"), "max_hold": c.get("max_hold", max_hold)}
 
