@@ -21,6 +21,10 @@ SCRIPTS_DIR = REPO_DIR / "scripts"
 PROTECTED_FILE = Path.home() / "Library/Application Support/tossctl/protected-stocks.json"
 CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/config.json"
 
+# venv Python (yfinance 등 의존성 포함)
+VENV_PYTHON = REPO_DIR / ".venv" / "bin" / "python3"
+PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else "python3"
+
 # tossctl 환경변수
 TOSS_ENV = {
     **os.environ,
@@ -105,7 +109,7 @@ def run_tossctl(*args) -> dict:
 def run_signal_engine(command: str, **kwargs) -> dict:
     """signal-engine.py 실행"""
     try:
-        args = ["python3", str(SCRIPTS_DIR / "signal-engine.py"), command]
+        args = [PYTHON, str(SCRIPTS_DIR / "signal-engine.py"), command]
         for k, v in kwargs.items():
             args.extend([f"--{k}", json.dumps(v) if isinstance(v, (dict, list)) else str(v)])
         result = subprocess.run(args, capture_output=True, text=True, timeout=10)
@@ -321,21 +325,21 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         elif path == "/api/trades":
             result = subprocess.run(
-                ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "list", "--status", params.get("status", "all")],
+                [PYTHON, str(SCRIPTS_DIR / "trade-logger.py"), "list", "--status", params.get("status", "all")],
                 capture_output=True, text=True, timeout=5
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/trades/analyze":
             result = subprocess.run(
-                ["python3", str(SCRIPTS_DIR / "trade-analyzer.py"), "analyze"],
+                [PYTHON, str(SCRIPTS_DIR / "trade-analyzer.py"), "analyze"],
                 capture_output=True, text=True, timeout=10
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/trades/suggest":
             result = subprocess.run(
-                ["python3", str(SCRIPTS_DIR / "trade-analyzer.py"), "suggest"],
+                [PYTHON, str(SCRIPTS_DIR / "trade-analyzer.py"), "suggest"],
                 capture_output=True, text=True, timeout=10
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
@@ -351,7 +355,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             syms = params.get("symbols", "TSLA")
             mkt = params.get("market", "us")
             date = params.get("date", "")
-            cmd = ["python3", str(SCRIPTS_DIR / "day-simulator.py"), "--symbols", syms, "--market", mkt, "--output", "json"]
+            cmd = [PYTHON, str(SCRIPTS_DIR / "day-simulator.py"), "--symbols", syms, "--market", mkt, "--output", "json"]
             if date: cmd.extend(["--date", date])
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=TOSS_ENV)
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
@@ -359,7 +363,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/backtest/period":
             syms = params.get("symbols", "TSLA")
             period = params.get("period", "6mo")
-            cmd = ["python3", str(SCRIPTS_DIR / "backtest.py"), "--symbol", syms, "--period", period, "--output", "json"]
+            cmd = [PYTHON, str(SCRIPTS_DIR / "backtest.py"), "--symbol", syms, "--period", period, "--output", "json"]
             if params.get("stop-loss"): cmd.extend(["--stop-loss", params["stop-loss"]])
             if params.get("take-profit"): cmd.extend(["--take-profit", params["take-profit"]])
             if params.get("grades"): cmd.extend(["--grades", params["grades"]])
@@ -367,7 +371,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
 
         elif path == "/api/screener/scan":
-            cmd_args = ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "scan"]
+            cmd_args = [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "scan"]
             if params.get("source"): cmd_args.extend(["--source", params["source"]])
             if params.get("market"): cmd_args.extend(["--market", params["market"]])
             if params.get("news-symbols"): cmd_args.extend(["--news-symbols", params["news-symbols"]])
@@ -376,7 +380,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         elif path == "/api/screener/watchlist":
             result = subprocess.run(
-                ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-list"],
+                [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-list"],
                 capture_output=True, text=True, timeout=5
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
@@ -418,21 +422,21 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response({"ok": True, "stocks": stocks["stocks"]})
 
         elif path == "/api/trades/log":
-            args = ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "log"]
+            args = [PYTHON, str(SCRIPTS_DIR / "trade-logger.py"), "log"]
             for k, v in body.items():
                 args.extend([f"--{k}", str(v)])
             result = subprocess.run(args, capture_output=True, text=True, timeout=5)
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/trades/close":
-            args = ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "close"]
+            args = [PYTHON, str(SCRIPTS_DIR / "trade-logger.py"), "close"]
             for k, v in body.items():
                 args.extend([f"--{k}", str(v)])
             result = subprocess.run(args, capture_output=True, text=True, timeout=5)
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/trades/lesson":
-            args = ["python3", str(SCRIPTS_DIR / "trade-logger.py"), "lesson"]
+            args = [PYTHON, str(SCRIPTS_DIR / "trade-logger.py"), "lesson"]
             for k, v in body.items():
                 args.extend([f"--{k}", str(v)])
             result = subprocess.run(args, capture_output=True, text=True, timeout=5)
@@ -441,13 +445,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/trades/apply-suggestion":
             sid = body.get("id", "")
             result = subprocess.run(
-                ["python3", str(SCRIPTS_DIR / "trade-analyzer.py"), "apply", sid],
+                [PYTHON, str(SCRIPTS_DIR / "trade-analyzer.py"), "apply", sid],
                 capture_output=True, text=True, timeout=5
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/screener/watchlist-add":
-            args = ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-add"]
+            args = [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-add"]
             for k, v in body.items():
                 args.extend([f"--{k}", str(v)])
             result = subprocess.run(args, capture_output=True, text=True, timeout=5)
@@ -455,7 +459,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         elif path == "/api/screener/watchlist-remove":
             result = subprocess.run(
-                ["python3", str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-remove", "--symbol", body.get("symbol", "")],
+                [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "watchlist-remove", "--symbol", body.get("symbol", "")],
                 capture_output=True, text=True, timeout=5
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
