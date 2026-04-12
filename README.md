@@ -30,14 +30,21 @@ flowchart TB
         CONFIG["signal-config.json"]
     end
 
+    subgraph Discord["Discord 연동"]
+        BOT["discord-bot.py\n!명령어 응답"]
+        NOTIFY["notify.py\n웹훅 알림"]
+    end
+
     subgraph Toss["tossctl"]
         API["토스증권 API\n시세/주문/계좌"]
     end
 
     REGIME --> SCREENER --> ENGINE --> GATE --> EXEC
     EXEC --> HOOK --> API
+    EXEC --> NOTIFY
     API --> LOGGER --> ANALYZER --> KELLY --> SUGGEST --> CONFIG --> ENGINE
     PROTECT --> HOOK
+    BOT --> CONFIG
 ```
 
 ## 핵심 컴포넌트
@@ -57,15 +64,15 @@ caffeinate -i python3 scripts/autotrade-daemon.py --interval 300 &
 
 ```
 매 사이클:
-  1. 세션 체크 ─── 만료 → macOS 알림 → 재로그인 대기
-  2. 점검 체크 ─── 점검 → 자동 대기 → 재개
-  3. 장 시간 ───── 휴장 → 스킵
-  4. 일일 손실 ─── 한도(운용금 기준) → 거래 중단
-  5. 연속 손절 ─── 3회 → 30분 냉각 → 재개
-  6. 포지션 체크 ─ 손절/익절/트레일링 → 자동 매도
+  1. 세션 체크 ─── 만료 → Discord 알림 → 재로그인 대기
+  2. 점검 체크 ─── 점검 → Discord 알림 → 자동 대기 → 재개
+  3. 장 시간 ───── 휴장 → 스킵 (마감 시 일일 보고서 자동 전송)
+  4. 일일 손실 ─── 한도(운용금 기준) → Discord 알림 → 거래 중단
+  5. 연속 손절 ─── 3회 → Discord 알림 → 30분 냉각 → 재개
+  6. 포지션 체크 ─ 시그널 알림 → 손절/익절/트레일링 → 자동 매도 → 알림
   7. 리스크 게이트 ─ 미통과 → 매수 스킵
   8. 스크리너 ──── 워치리스트 채점 → A/B만 매수
-  9. 멀티 진입 ─── 포지션 한도까지 병렬 매수 (주문가능금액 균등 배분)
+  9. 멀티 진입 ─── 포지션 한도까지 병렬 매수 → 알림 (주문가능금액 균등 배분)
 ```
 
 ### 시그널 엔진 (`signal-engine.py`)
@@ -202,6 +209,72 @@ python3 dashboard/server.py  # → http://localhost:8777
 | 일일 | 당일 | 다운로드 가능 |
 | 주간 | 최근 7일 | 다운로드 가능 |
 | 월간 | 최근 30일 | 다운로드 가능 |
+
+## Discord 봇 (`discord-bot.py`)
+
+채널에서 명령어를 입력하면 거래 정보 조회, 데몬 제어, 종목 스크리닝이 가능합니다.
+
+```bash
+# 실행
+.venv/bin/python3 scripts/discord-bot.py
+```
+
+| 분류 | 명령어 | 설명 |
+|------|--------|------|
+| **조회** | `!positions` | 현재 보유 포지션 |
+| | `!trades [N]` | 최근 N건 청산 내역 (기본 5) |
+| | `!today` | 오늘 거래 요약 |
+| | `!status` | 데몬 상태 (프로세스/사이클/손익) |
+| | `!report` | 일일 보고서 생성 |
+| | `!scan [watchlist\|auto\|all]` | 종목 스크리닝 (등급/점수) |
+| **제어** | `!mode live\|dry-run` | 거래 모드 전환 |
+| | `!daemon start\|stop` | 데몬 원격 시작/종료 |
+| | `!login` | 토스증권 세션 갱신 시도 |
+| **기타** | `!ping` | 봇 응답 테스트 |
+| | `!help` | 명령어 목록 |
+
+### Discord 알림 (`notify.py`)
+
+데몬의 모든 이벤트가 Discord 웹훅으로 자동 전송됩니다.
+
+| 이벤트 | 알림 내용 |
+|--------|----------|
+| 매수/매도 | 종목, 수량, 가격, 등급, P&L, 청산 사유 |
+| 시그널 감지 | 손절/익절/트레일링/급락/추세파괴 |
+| 상태 변경 | 실행/세션만료/점검/손실한도/냉각기/에러 |
+| 장 마감 | 일일 보고서 자동 전송 |
+
+모든 알림에 **LIVE / DRY RUN** 모드가 표시됩니다.
+
+## 상시 실행 (launchd)
+
+터미널 없이 Mac 부팅 시 자동 시작, 크래시 시 자동 재시작됩니다.
+
+```bash
+# 서비스 등록
+launchctl load ~/Library/LaunchAgents/com.toss-trading.discord-bot.plist
+launchctl load ~/Library/LaunchAgents/com.toss-trading.autotrade-daemon.plist
+
+# 서비스 해제
+launchctl unload ~/Library/LaunchAgents/com.toss-trading.discord-bot.plist
+launchctl unload ~/Library/LaunchAgents/com.toss-trading.autotrade-daemon.plist
+
+# 상태 확인
+launchctl list | grep toss-trading
+
+# 로그
+tail -f ~/Library/Logs/toss-trading/discord-bot.log
+tail -f ~/Library/Logs/toss-trading/autotrade-daemon.log
+```
+
+### 환경변수 (`.env`)
+
+```bash
+DISCORD_BOT_TOKEN=<봇 토큰>
+DISCORD_WEBHOOK_URL=<웹훅 URL>
+```
+
+`.env` 파일은 프로젝트 루트에 위치하며, `notify.py`와 `discord-bot.py`가 자동 로드합니다.
 
 ## Claude Code 스킬
 
