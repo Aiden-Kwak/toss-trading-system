@@ -145,6 +145,18 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/auth/status":
             self._json_response(run_tossctl("auth", "status"))
 
+        elif path == "/api/auth/login":
+            # 백그라운드에서 auth login 실행 (브라우저 열림)
+            try:
+                subprocess.Popen(
+                    [str(TOSS_BIN), "auth", "login"],
+                    env=TOSS_ENV,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                self._json_response({"ok": True, "message": "브라우저가 열립니다. 토스 앱으로 QR을 스캔하세요."})
+            except Exception as e:
+                self._json_response({"ok": False, "error": str(e)})
+
         elif path == "/api/account/summary":
             self._json_response(run_tossctl("account", "summary"))
 

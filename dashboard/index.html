@@ -144,6 +144,7 @@ button.save:hover { opacity:.85; }
   <h1><span>Toss</span> Trading System</h1>
   <div class="status-bar">
     <span><span class="status-dot" id="authDot"></span> <span id="authStatus">확인 중...</span></span>
+    <button id="loginBtn" onclick="doLogin()" style="display:none;font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--red);background:rgba(239,68,68,0.15);color:var(--red);cursor:pointer">재로그인</button>
     <span style="color:var(--text2)" id="clock"></span>
   </div>
 </div>
@@ -320,7 +321,42 @@ async function checkMaintenance() {
 function updateMaintCountdown() { const el = document.getElementById('maintCountdown'); if (!maintUntil) { el.textContent=''; return; } const diff = maintUntil-new Date(); if (diff<=0) { el.textContent='(점검 종료 예정)'; return; } el.textContent = `(${Math.floor(diff/60000)}분 ${Math.floor((diff%60000)/1000)}초 후 종료)`; }
 
 // Auth
-async function checkAuth() { try { const r = await fetch(API+'/api/auth/status'); const d = await r.json(); const dot = document.getElementById('authDot'); const st = document.getElementById('authStatus'); if (d.error||d.raw?.includes('No active')) { dot.className='status-dot off'; st.textContent='세션 없음'; } else { dot.className='status-dot on'; st.textContent='세션 활성'; } } catch {} }
+async function checkAuth() {
+  try {
+    const r = await fetch(API+'/api/auth/status'); const d = await r.json();
+    const dot = document.getElementById('authDot'); const st = document.getElementById('authStatus'); const btn = document.getElementById('loginBtn');
+    if (d.error || d.raw?.includes('No active') || (d._error && d._error.includes('490'))) {
+      dot.className='status-dot off'; st.textContent='세션 만료'; btn.style.display='inline-block';
+    } else {
+      dot.className='status-dot on'; st.textContent='세션 활성'; btn.style.display='none';
+    }
+  } catch { document.getElementById('loginBtn').style.display='inline-block'; }
+}
+
+async function doLogin() {
+  const btn = document.getElementById('loginBtn');
+  btn.textContent = 'QR 대기 중...'; btn.style.borderColor='var(--yellow)'; btn.style.color='var(--yellow)';
+  const r = await fetch(API+'/api/auth/login'); const d = await r.json();
+  if (d.ok) {
+    alert('브라우저가 열렸습니다.\n토스 앱으로 QR 코드를 스캔하세요.\n로그인 완료 후 이 페이지를 새로고침하세요.');
+    // 10초마다 세션 체크 (로그인 완료 감지)
+    const checker = setInterval(async () => {
+      const cr = await fetch(API+'/api/auth/status'); const cd = await cr.json();
+      if (!cd.error && !cd._error && cd.valid) {
+        clearInterval(checker);
+        btn.textContent = '재로그인'; btn.style.borderColor='var(--red)'; btn.style.color='var(--red)'; btn.style.display='none';
+        document.getElementById('authDot').className='status-dot on';
+        document.getElementById('authStatus').textContent='세션 활성';
+        loadAll(); // 데이터 새로고침
+      }
+    }, 10000);
+    // 5분 후 폴링 중단
+    setTimeout(() => clearInterval(checker), 300000);
+  } else {
+    alert('로그인 실행 실패: ' + (d.error || '알 수 없는 오류'));
+    btn.textContent = '재로그인'; btn.style.borderColor='var(--red)'; btn.style.color='var(--red)';
+  }
+}
 
 // Summary
 async function loadSummary() {
