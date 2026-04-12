@@ -351,6 +351,14 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 self._json_response({"status": "stopped", "message": "데몬 미실행"})
 
+        elif path == "/api/resolve-kr":
+            query = params.get("q", "")
+            result = subprocess.run(
+                [PYTHON, str(SCRIPTS_DIR / "kr-stock-resolver.py"), query],
+                capture_output=True, text=True, timeout=15
+            )
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
         elif path == "/api/backtest/day":
             syms = params.get("symbols", "TSLA")
             mkt = params.get("market", "us")

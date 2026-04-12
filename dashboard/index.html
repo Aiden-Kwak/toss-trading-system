@@ -208,7 +208,7 @@ button.primary:hover { opacity:0.9; }
   <div class="card full-width">
     <div class="card-header"><span class="card-title">하루 시뮬레이션 (5분봉 리플레이)</span></div>
     <div class="input-row" style="margin-top:0">
-      <input type="text" id="daySymbols" placeholder="종목 (TSLA,NVDA 또는 삼성전자,005930)">
+      <input type="text" id="daySymbols" placeholder="종목 (TSLA,NVDA 또는 종목코드: 005930,215790)">
       <input type="text" id="dayDate" placeholder="날짜 (비우면 최근, 예: 2026-04-10)" style="max-width:200px">
       <select id="dayMarket" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="us">미국</option><option value="kr">한국</option></select>
       <button class="primary" onclick="runDaySim()">시뮬레이션</button>
@@ -220,7 +220,7 @@ button.primary:hover { opacity:0.9; }
   <div class="card full-width">
     <div class="card-header"><span class="card-title">기간 백테스트 (일봉, T+1 시가 매수)</span></div>
     <div class="input-row" style="margin-top:0">
-      <input type="text" id="btSymbols" placeholder="종목 (PLTR,TSLA 또는 삼성전자,카카오)">
+      <input type="text" id="btSymbols" placeholder="종목 (PLTR,TSLA 또는 종목코드: 005930,035720)">
       <select id="btPeriod" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px"><option value="3mo">3개월</option><option value="6mo" selected>6개월</option><option value="1y">1년</option></select>
       <input type="text" id="btStopLoss" placeholder="손절% (기본: -3)" style="max-width:100px">
       <input type="text" id="btTakeProfit" placeholder="익절% (기본: 7)" style="max-width:100px">
@@ -424,23 +424,40 @@ async function applySuggestion(id) { const r=await fetch(API+'/api/trades/apply-
 
 // Load all (dashboard tab)
 // Backtest: Day Simulation
-// 한국 종목 코드 변환: 삼성전자→005930.KS, 005930→005930.KS, TSLA→TSLA
-function normalizeSymbols(input, market) {
-  const krNameMap = {'삼성전자':'005930','SK하이닉스':'000660','네이버':'035420','NAVER':'035420','카카오':'035720','LG에너지솔루션':'373220','현대차':'005380','기아':'000270','삼성SDI':'006400','셀트리온':'068270','포스코홀딩스':'005490','KB금융':'105560','신한지주':'055550','삼성바이오로직스':'207940','LG화학':'051910','현대모비스':'012330','SK이노베이션':'096770','카카오뱅크':'323410','두산에너빌리티':'034020','한화에어로스페이스':'012450','덕산네오룩스':'213420'};
-  return input.split(',').map(s => {
-    s = s.trim();
-    if (krNameMap[s]) s = krNameMap[s];
-    if (market === 'kr' && /^\d{6}$/.test(s)) s += '.KS';
-    return s;
-  }).join(',');
+// 한국 종목 자동 변환 (서버 resolve API 사용)
+async function resolveSymbols(input, market) {
+  const parts = input.split(',').map(s => s.trim()).filter(Boolean);
+  const resolved = [];
+  for (const s of parts) {
+    // 이미 야후 코드이거나 영문 티커면 그대로
+    if (s.includes('.KS') || s.includes('.KQ') || (market !== 'kr' && /^[A-Z]+$/.test(s))) {
+      resolved.push(s); continue;
+    }
+    // 한국 종목이면 서버에서 resolve
+    if (market === 'kr' || /[가-힣]/.test(s) || /^\d{6}$/.test(s)) {
+      try {
+        const r = await fetch(API + `/api/resolve-kr?q=${encodeURIComponent(s)}`);
+        const d = await r.json();
+        const items = Array.isArray(d) ? d : [d];
+        for (const item of items) {
+          if (item.found && item.yahoo) resolved.push(item.yahoo);
+          else resolved.push(s); // 실패 시 원본
+        }
+      } catch { resolved.push(s); }
+    } else {
+      resolved.push(s);
+    }
+  }
+  return resolved.join(',');
 }
 
 async function runDaySim() {
   let syms = document.getElementById('daySymbols').value.trim(); if(!syms) return;
   const date = document.getElementById('dayDate').value.trim();
   const mkt = document.getElementById('dayMarket').value;
-  syms = normalizeSymbols(syms, mkt);
   const panel = document.getElementById('dayResult');
+  panel.innerHTML = `<div class="loading"><span class="spinner"></span> 종목 변환 중...</div>`;
+  syms = await resolveSymbols(syms, mkt);
   panel.innerHTML = `<div class="loading"><span class="spinner"></span> ${syms} 5분봉 시뮬레이션 중 (최대 60초)...</div>`;
   let url = API+`/api/backtest/day?symbols=${syms}&market=${mkt}`;
   if (date) url += `&date=${date}`;
@@ -493,8 +510,12 @@ async function runDaySim() {
 // Backtest: Period
 async function runBacktest() {
   let syms = document.getElementById('btSymbols').value.trim(); if(!syms) return;
-  // 한국 종목명/코드 자동 변환
-  syms = normalizeSymbols(syms, syms.match(/[가-힣]/) || syms.match(/^\d{6}(,|$)/) ? 'kr' : 'us');
+  const panel = document.getElementById('btResult');
+  const isKr = /[가-힣]/.test(syms) || /^\d{6}(,|$)/.test(syms);
+  if (isKr) {
+    panel.innerHTML = '<div class="loading"><span class="spinner"></span> 종목 변환 중...</div>';
+    syms = await resolveSymbols(syms, 'kr');
+  }
   const period = document.getElementById('btPeriod').value;
   const sl = document.getElementById('btStopLoss').value.trim() || '-0.03';
   const tp = document.getElementById('btTakeProfit').value.trim() || '0.07';
