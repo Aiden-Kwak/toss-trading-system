@@ -268,9 +268,47 @@ def evaluate_candidates(candidates: list, portfolio: dict = None) -> list:
         except Exception:
             continue
 
-    # 점수순 정렬
-    scored.sort(key=lambda x: x.get("score_pct", 0), reverse=True)
+    # 복합 우선순위 정렬
+    # 1차: 등급 (A > B > C > D)
+    # 2차: 점수 (높을수록 우선)
+    # 3차: 거래량 급증 (유동성 높을수록 체결 확실)
+    # 4차: 알파 모멘텀 (강한 쪽 우선)
+    # 5차: 과거 손실 종목 감점
+    loss_symbols = _load_loss_history()
+
+    grade_order = {"A": 0, "B": 1, "C": 2, "D": 3}
+    for s in scored:
+        # 과거 손실 기록 있으면 점수 감점
+        sym = s.get("symbol", "")
+        if sym in loss_symbols:
+            s["_loss_penalty"] = loss_symbols[sym]
+        else:
+            s["_loss_penalty"] = 0
+
+    scored.sort(key=lambda x: (
+        grade_order.get(x.get("grade", "D"), 3),   # 등급
+        -(x.get("score_pct", 0)),                    # 점수 (높을수록)
+        -(x.get("_vol_spike", 0) or 0),              # 거래량 급증
+        x.get("_loss_penalty", 0),                   # 과거 손실 (적을수록)
+    ))
     return scored
+
+
+def _load_loss_history() -> dict:
+    """과거 거래에서 종목별 손실 횟수 조회"""
+    log_file = Path.home() / "Library/Application Support/tossctl/trade-log.json"
+    if not log_file.exists():
+        return {}
+    try:
+        trades = json.loads(log_file.read_text())
+        losses = {}
+        for t in trades:
+            if t.get("status") == "closed" and (t.get("pnl_pct") or 0) < 0:
+                sym = t.get("symbol", "")
+                losses[sym] = losses.get(sym, 0) + 1
+        return losses
+    except Exception:
+        return {}
 
 
 # ─── 메인 스캔 ───
