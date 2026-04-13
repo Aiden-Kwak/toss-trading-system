@@ -260,6 +260,8 @@ def compute_daily_score(row, prev_close, volume, is_kr=False, history=None):
         "technical": tech,
         "rsi": rsi,
         "bb_pctb": bb_pctb,
+        "ema9": ema9,
+        "ema21": ema21,
         "ema_cross": "golden" if (ema9 and ema21 and ema9 > ema21) else "death" if (ema9 and ema21 and ema9 < ema21) else None,
         "vol_ratio": vol_ratio,
         "change_rate": round(change_rate * 100, 2),
@@ -385,6 +387,9 @@ def run_backtest(
     in_position = False
     current_trade = None
     pending_entry = None  # T일 시그널 → T+1 매수 대기
+    _prev_ema9 = None     # 전일 EMA9 (골든크로스 감지용)
+    _prev_ema21 = None    # 전일 EMA21
+    _trend_entered = False  # uptrend 첫 진입 추적
 
     for i in range(1, len(df)):
         prev_close = df.iloc[i - 1]["Close"]
@@ -392,10 +397,9 @@ def run_backtest(
         date_str = df.index[i].strftime("%Y-%m-%d")
         volume = row.get("Volume", 0)
 
-        # 히스토리 구성 (기술적 지표용, 최근 30일)
-        start_idx = max(0, i - 29)
-        hist_closes = [df.iloc[j]["Close"] for j in range(start_idx, i + 1)]
-        hist_volumes = [df.iloc[j].get("Volume", 0) for j in range(start_idx, i + 1)]
+        # 히스토리 구성 (기술적 지표용, 전체 히스토리 사용 — EMA 정확도)
+        hist_closes = [df.iloc[j]["Close"] for j in range(0, i + 1)]
+        hist_volumes = [df.iloc[j].get("Volume", 0) for j in range(0, i + 1)]
         history = {"closes": hist_closes, "volumes": hist_volumes} if len(hist_closes) >= 15 else None
 
         # T일 채점 (기술적 지표 포함)
@@ -451,9 +455,9 @@ def run_backtest(
             # 동적 손익절 + 보유일
             strategy_type = pending_entry.get("strategy", "momentum")
             if strategy_type == "trend_follow":
-                # 추세 추종: 넓은 손절 (ATR x 2), 익절 없음 (추세 파괴로 청산)
+                # 추세 추종: 넓은 손절 (ATR x 2 또는 기본 x 2 중 넓은 쪽)
                 if atr_val > 0:
-                    current_trade._dynamic_sl = max(stop_loss * 2, -(atr_val * 2 / entry_price))
+                    current_trade._dynamic_sl = min(stop_loss * 2, -(atr_val * 2 / entry_price))
                 else:
                     current_trade._dynamic_sl = stop_loss * 2  # 기본 손절의 2배
                 current_trade._dynamic_tp = 9.99  # 사실상 익절 없음
@@ -516,6 +520,7 @@ def run_backtest(
                 trades.append(current_trade)
                 in_position = False
                 current_trade = None
+                _trend_entered = False  # 청산 후 재진입 허용
 
         # 포지션 없고 시그널 발생 → 다음 날 매수 예약
         if not in_position and not pending_entry:
@@ -523,16 +528,32 @@ def run_backtest(
             stock_class = classify_stock(history["closes"]) if history else {"strategy": "momentum", "daytrade_ok": True, "regime": "unknown"}
             strategy = stock_class["strategy"]
 
-            # 추세 추종은 등급 무관 — 골든크로스 + 풀백이면 진입
+            # 추세 추종: 골든크로스(교차) 또는 uptrend 첫 감지 + 채점 B 이상
             if strategy == "trend_follow":
-                ema_cross = score.get("ema_cross")
+                cur_ema9 = score.get("ema9")
+                cur_ema21 = score.get("ema21")
                 day_change = score.get("change_rate", 0)
-                if ema_cross == "golden" and day_change <= 0:
-                    # 골든크로스 유지 + 당일 소폭 하락(풀백) → 진입
+
+                is_crossover = (
+                    cur_ema9 and cur_ema21 and cur_ema9 > cur_ema21 and
+                    _prev_ema9 is not None and _prev_ema21 is not None and
+                    _prev_ema9 <= _prev_ema21
+                )
+                # 히스토리 시작 시 이미 uptrend인 경우: 첫 감지도 진입 허용
+                is_first_uptrend = (
+                    cur_ema9 and cur_ema21 and cur_ema9 > cur_ema21 and
+                    _prev_ema9 is None and not _trend_entered
+                )
+
+                if (is_crossover or is_first_uptrend) and grade in ("A", "B") and day_change <= 0:
                     pending_entry = {
                         "date": date_str, "grade": "T", "score": score["total"],
                         "strategy": "trend_follow", "hold_days": 999,
                     }
+                    _trend_entered = True
+
+                _prev_ema9 = cur_ema9
+                _prev_ema21 = cur_ema21
                 continue  # trend_follow는 아래 등급 체크 스킵
 
             if grade in entry_grades:
@@ -556,14 +577,19 @@ def run_backtest(
                         continue
 
                 elif strategy == "trend_follow":
-                    # 추세 추종: 골든크로스 + 풀백(일시 하락)일 때 매수
-                    # 이후 추세 꺾일 때까지 무기한 보유
-                    ema_cross = score.get("ema_cross")
-                    if ema_cross != "golden":
-                        continue  # 골든크로스가 아니면 진입 안 함
+                    # 추세 추종: 진짜 골든크로스 + 풀백일 때만 진입
+                    cur_ema9 = score.get("ema9")
+                    cur_ema21 = score.get("ema21")
+                    is_crossover = (
+                        cur_ema9 and cur_ema21 and cur_ema9 > cur_ema21 and
+                        _prev_ema9 is not None and _prev_ema21 is not None and
+                        _prev_ema9 <= _prev_ema21
+                    )
+                    if not is_crossover:
+                        continue
                     day_change = score.get("change_rate", 0)
                     if day_change > 1.0:
-                        continue  # 이미 많이 오른 날은 추격 안 함
+                        continue
 
                 elif strategy == "momentum":
                     pass
@@ -586,6 +612,10 @@ def run_backtest(
                     "strategy": strategy,
                     "hold_days": dynamic_hold,
                 }
+
+            # EMA 업데이트 (일반 경로)
+            _prev_ema9 = score.get("ema9") or _prev_ema9
+            _prev_ema21 = score.get("ema21") or _prev_ema21
 
     # 마지막 포지션이 열려있으면 종가로 청산
     if in_position and current_trade:
@@ -800,6 +830,9 @@ def main():
 
     for symbol in symbols:
         symbol = symbol.strip()
+        # 한국 종목코드 자동 변환: 034730 → 034730.KS
+        if symbol.isdigit() and len(symbol) == 6 and ".K" not in symbol:
+            symbol = symbol + ".KS"
         result = run_backtest(
             symbol=symbol,
             period=period,

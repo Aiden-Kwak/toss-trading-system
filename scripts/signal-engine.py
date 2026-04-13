@@ -88,6 +88,23 @@ def calculate_kelly(win_rate: float, avg_win: float, avg_loss: float,
 
 # ─── 손절/익절 체크 ───
 
+def _load_entry_grades() -> dict:
+    """trade-log에서 종목별 진입 등급 조회"""
+    from pathlib import Path
+    log_file = Path.home() / "Library/Application Support/tossctl/trade-log.json"
+    if not log_file.exists():
+        return {}
+    try:
+        trades = json.loads(log_file.read_text())
+        grades = {}
+        for t in trades:
+            if t.get("status") == "open":
+                grades[t.get("symbol", "")] = t.get("entry_grade", "")
+        return grades
+    except Exception:
+        return {}
+
+
 def check_positions(positions: list, config: dict) -> list:
     """보유종목의 손절/익절 시그널을 체크합니다.
 
@@ -96,6 +113,9 @@ def check_positions(positions: list, config: dict) -> list:
     """
     stop_loss = config.get("stop_loss_pct", DEFAULT_CONFIG["stop_loss_pct"]) / 100
     take_profit = config.get("take_profit_pct", DEFAULT_CONFIG["take_profit_pct"]) / 100
+
+    # T등급(추세추종) 종목은 넓은 손절 적용
+    entry_grades = _load_entry_grades()
 
     signals = []
     for pos in positions:
@@ -107,6 +127,15 @@ def check_positions(positions: list, config: dict) -> list:
         if quantity <= 0:
             continue
 
+        # T등급: 손절 2배, 익절 없음 (추세 파괴로 청산)
+        grade = entry_grades.get(symbol, "")
+        if grade == "T":
+            eff_sl = stop_loss * 2   # -3% → -6%
+            eff_tp = 9.99            # 사실상 익절 없음
+        else:
+            eff_sl = stop_loss
+            eff_tp = take_profit
+
         signal = {
             "symbol": symbol,
             "name": pos.get("name", ""),
@@ -115,6 +144,7 @@ def check_positions(positions: list, config: dict) -> list:
             "current_price": pos.get("current_price", 0),
             "average_price": pos.get("average_price", 0),
             "quantity": quantity,
+            "entry_grade": grade,
         }
 
         # 트레일링 스톱 계산
@@ -122,14 +152,13 @@ def check_positions(positions: list, config: dict) -> list:
         trailing_dist = config.get("trailing_stop_distance", DEFAULT_CONFIG["trailing_stop_distance"]) / 100
 
         # 손절 시그널
-        if profit_rate <= stop_loss:
+        if profit_rate <= eff_sl:
             signal["action"] = "SELL_STOP_LOSS"
-            signal["reason"] = f"손절선 도달: {profit_rate*100:.1f}% (기준: {stop_loss*100:.1f}%)"
+            signal["reason"] = f"손절선 도달: {profit_rate*100:.1f}% (기준: {eff_sl*100:.1f}%)"
             signal["urgency"] = "HIGH"
             signals.append(signal)
 
         # 트레일링 스톱 (근사): 수익 trigger 이상 + 당일 distance 이상 하락
-        # 참고: 데몬/시뮬레이터는 고점 대비 하락으로 더 정밀하게 체크
         elif profit_rate >= trailing_trigger and daily_rate <= -trailing_dist:
             signal["action"] = "SELL_TRAILING_STOP"
             signal["reason"] = f"트레일링 스톱: 수익 {profit_rate*100:.1f}%에서 당일 -{abs(daily_rate)*100:.1f}% 하락"
@@ -137,9 +166,9 @@ def check_positions(positions: list, config: dict) -> list:
             signals.append(signal)
 
         # 익절 시그널
-        elif profit_rate >= take_profit:
+        elif profit_rate >= eff_tp:
             signal["action"] = "SELL_TAKE_PROFIT"
-            signal["reason"] = f"익절선 도달: {profit_rate*100:.1f}% (기준: {take_profit*100:.1f}%)"
+            signal["reason"] = f"익절선 도달: {profit_rate*100:.1f}% (기준: {eff_tp*100:.1f}%)"
             signal["urgency"] = "MEDIUM"
             signals.append(signal)
 
@@ -508,8 +537,9 @@ def risk_gate(portfolio: dict, config: dict, today_pnl: float = 0, active_positi
         all_passed = False
         blocked_reason = blocked_reason or f"동시 포지션 한도: {active_positions}/{max_positions}"
 
-    # 3. 투자 여력
-    min_invest = total_asset * max_position_pct / 100 * 0.3  # 최소 30%는 있어야
+    # 3. 투자 여력 — 주문가능금액이 10,000원 이상이면 패스
+    # (total_asset 기준은 보호종목 평가금이 포함되어 기준이 비현실적으로 높아짐)
+    min_invest = 10000
     fund_ok = orderable >= min_invest
     checks.append({
         "name": "available_funds",

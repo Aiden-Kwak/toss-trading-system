@@ -9,17 +9,22 @@
     <dict>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
+        <key>PATH</key>
+        <string>/Users/aiden/Desktop/Auto-trader/tossinvest-cli/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>TOSSCTL_AUTH_HELPER_DIR</key>
+        <string>/Users/aiden/Desktop/Auto-trader/tossinvest-cli/auth-helper</string>
+        <key>TOSSCTL_AUTH_HELPER_PYTHON</key>
+        <string>/Users/aiden/Desktop/Auto-trader/tossinvest-cli/auth-helper/.venv/bin/python3</string>
     </dict>
 
     <key>ProgramArguments</key>
     <array>
-        <!-- 본인 환경에 맞게 수정 -->
-        <string>/path/to/toss-trading-system/scripts/.venv/bin/python3</string>
-        <string>/path/to/toss-trading-system/scripts/discord-bot.py</string>
+        <string>/Users/aiden/Desktop/Auto-trader/toss-trading-system/.venv/bin/python3</string>
+        <string>/Users/aiden/Desktop/Auto-trader/toss-trading-system/scripts/discord-bot.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/path/to/toss-trading-system</string>
+    <string>/Users/aiden/Desktop/Auto-trader/toss-trading-system</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -28,10 +33,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOU/Library/Logs/toss-trading/discord-bot.log</string>
+    <string>/Users/aiden/Library/Logs/toss-trading/discord-bot.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/YOU/Library/Logs/toss-trading/discord-bot.error.log</string>
+    <string>/Users/aiden/Library/Logs/toss-trading/discord-bot.error.log</string>
 
     <key>ThrottleInterval</key>
     <integer>10</integer>

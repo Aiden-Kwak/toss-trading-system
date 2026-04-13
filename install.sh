@@ -51,9 +51,9 @@ if ! grep -q "tossinvest-cli" "$HOME/.zshrc" 2>/dev/null; then
   cat >> "$HOME/.zshrc" << 'EOF'
 
 # tossinvest-cli (tossctl)
-export PATH="$HOME/Desktop/Personal/Stock/tossinvest-cli/bin:$PATH"
-export TOSSCTL_AUTH_HELPER_DIR="$HOME/Desktop/Personal/Stock/tossinvest-cli/auth-helper"
-export TOSSCTL_AUTH_HELPER_PYTHON="$HOME/Desktop/Personal/Stock/tossinvest-cli/auth-helper/.venv/bin/python3"
+export PATH="$HOME/Desktop/Auto-trader/tossinvest-cli/bin:$PATH"
+export TOSSCTL_AUTH_HELPER_DIR="$HOME/Desktop/Auto-trader/tossinvest-cli/auth-helper"
+export TOSSCTL_AUTH_HELPER_PYTHON="$HOME/Desktop/Auto-trader/tossinvest-cli/auth-helper/.venv/bin/python3"
 EOF
   echo "  -> .zshrc에 환경변수 추가"
 else

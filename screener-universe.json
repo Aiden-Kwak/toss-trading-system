@@ -7,10 +7,28 @@
     "NET", "SNOW", "ENPH", "RIVN", "LCID", "HOOD", "AFRM", "UPST",
     "SPY", "QQQ", "VOO", "IWM", "ARKK", "SOXL", "TQQQ"
   ],
+  "nasdaq100": [
+    "AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "AMAT", "AMD", "AMGN",
+    "AMZN", "ANSS", "ARM", "ASML", "AVGO", "AZN", "BIIB", "BKNG", "BKR", "CDNS",
+    "CDW", "CEG", "CHTR", "CMCSA", "COIN", "COST", "CPRT", "CRWD", "CSCO", "CSGP",
+    "CTAS", "CTSH", "DASH", "DDOG", "DLTR", "DXCM", "EA", "EXC", "FANG", "FAST",
+    "FTNT", "GEHC", "GFS", "GILD", "GOOG", "GOOGL", "HON", "IDXX", "ILMN", "INTC",
+    "INTU", "ISRG", "KDP", "KHC", "KLAC", "LIN", "LRCX", "LULU", "MAR", "MCHP",
+    "MDB", "MDLZ", "MELI", "META", "MNST", "MRVL", "MSFT", "MU", "NFLX", "NVDA",
+    "NXPI", "ODFL", "ON", "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP", "PLTR",
+    "PYPL", "QCOM", "REGN", "ROP", "ROST", "SBUX", "SMCI", "SNPS", "TEAM", "TMUS",
+    "TSLA", "TTD", "TTWO", "TXN", "VRSK", "VRTX", "WBD", "WDAY", "XEL", "ZS"
+  ],
   "kr": [
     "005930.KS", "000660.KS", "035420.KS", "035720.KS", "051910.KS",
     "006400.KS", "003670.KS", "105560.KS", "032830.KS", "012330.KS",
     "247540.KS", "352820.KS", "003490.KS", "028260.KS", "066570.KS",
-    "055550.KS", "096770.KS", "034730.KS", "086790.KS", "033780.KS"
+    "055550.KS", "096770.KS", "034730.KS", "086790.KS", "033780.KS",
+    "068270.KS", "207940.KS", "005380.KS", "000270.KS", "005490.KS",
+    "036570.KS", "003550.KS", "034020.KS", "011200.KS", "018260.KS",
+    "009150.KS", "017670.KS", "030200.KS", "316140.KS", "010130.KS",
+    "373220.KS", "047050.KS", "259960.KS", "361610.KS", "377300.KS",
+    "003230.KQ", "058470.KQ", "293490.KQ", "041510.KQ", "028300.KQ",
+    "263750.KQ", "196170.KQ", "112040.KQ", "035900.KQ", "145020.KQ"
   ]
 }

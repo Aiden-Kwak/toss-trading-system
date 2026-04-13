@@ -46,8 +46,8 @@ SIGNAL_CONFIG = CONFIG_DIR / "signal-config.json"
 SCRIPTS_DIR = Path(__file__).parent
 
 HOME = Path.home()
-_default_bin = HOME / "Desktop/Personal/Stock/tossinvest-cli/bin/tossctl"
-_default_helper = HOME / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"
+_default_bin = HOME / "Desktop/Auto-trader/tossinvest-cli/bin/tossctl"
+_default_helper = HOME / "Desktop/Auto-trader/tossinvest-cli/auth-helper"
 TOSS_BIN = Path(os.environ.get("TOSSCTL_BIN", str(_default_bin)))
 TOSS_HELPER_DIR = os.environ.get("TOSSCTL_AUTH_HELPER_DIR", str(_default_helper))
 TOSS_HELPER_PY = os.environ.get("TOSSCTL_AUTH_HELPER_PYTHON", str(Path(TOSS_HELPER_DIR) / ".venv/bin/python3"))
@@ -113,24 +113,58 @@ def cmd_help() -> discord.Embed:
 
 
 def cmd_positions() -> discord.Embed:
-    trades = load_trades()
-    open_trades = [t for t in trades if t.get("status") == "open"]
+    # tossctl로 실시간 포지션 조회
+    positions = []
+    try:
+        r = subprocess.run(
+            [str(TOSS_BIN), "portfolio", "positions", "--output", "json"],
+            capture_output=True, text=True, timeout=15, env=TOSS_ENV
+        )
+        if r.returncode == 0:
+            positions = json.loads(r.stdout)
+    except Exception:
+        pass
 
-    if not open_trades:
+    # 보호종목 제외 여부는 표시만 하고 포함
+    protected_file = Path.home() / "Library/Application Support/tossctl/protected-stocks.json"
+    protected = set()
+    try:
+        if protected_file.exists():
+            pd = json.loads(protected_file.read_text())
+            protected = {s["symbol"] for s in pd.get("stocks", [])}
+    except Exception:
+        pass
+
+    # trade-log에서 진입 정보 보완 (grade, reason 등)
+    trades = load_trades()
+    log_map = {t["symbol"]: t for t in trades if t.get("status") == "open"}
+
+    if not positions:
         return discord.Embed(
             title="📋 보유 포지션",
             description="현재 보유 중인 포지션이 없습니다.",
             color=PURPLE
         ).set_footer(**footer())
 
-    embed = discord.Embed(title=f"📋 보유 포지션 ({len(open_trades)}건)", color=PURPLE)
-    for t in open_trades[:25]:
-        entry = t.get("entry_price", 0)
-        grade = t.get("entry_grade", "?")
-        mode_icon = "🤖" if t.get("mode") == "autotrade" else "🔧" if t.get("mode") == "dry-run" else "👤"
+    embed = discord.Embed(title=f"📋 보유 포지션 ({len(positions)}건)", color=PURPLE)
+    for p in positions[:25]:
+        sym = p.get("symbol", p.get("product_code", "?"))
+        qty = p.get("quantity", 0)
+        avg = p.get("average_price", p.get("avg_price", 0))
+        cur = p.get("current_price", 0)
+        pnl_pct = p.get("profit_rate", 0)
+        if isinstance(pnl_pct, float) and abs(pnl_pct) < 10:
+            pnl_pct *= 100  # 0.xx → xx%로 변환
+
+        pnl_icon = "🟢" if pnl_pct >= 0 else "🔴"
+        lock_icon = "🔒 " if sym in protected else ""
+        log_entry = log_map.get(sym, {})
+        grade = log_entry.get("entry_grade", "")
+        grade_str = f" | {grade}등급" if grade else ""
+
         embed.add_field(
-            name=f"{mode_icon} {t['symbol']}",
-            value=f"{t.get('quantity', 0):.0f}주 @ {entry:,.2f}\n등급: {grade} | {t.get('entry_date', '')}",
+            name=f"{lock_icon}{sym}",
+            value=f"{qty:.2f}주 @ {avg:,.0f}원\n현재: {cur:,.0f}원 {pnl_icon}{pnl_pct:+.2f}%{grade_str}",
             inline=True
         )
     return embed.set_footer(**footer())

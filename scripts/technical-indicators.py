@@ -134,11 +134,21 @@ def analyze_symbol(code: str, market: str = "us") -> dict:
     bb = compute_bollinger(closes)
     ema9 = compute_ema(closes, 9)
     ema21 = compute_ema(closes, 21)
+    # 전일 EMA (크로스오버 감지용)
+    prev_ema9 = compute_ema(closes[:-1], 9) if len(closes) > 9 else None
+    prev_ema21 = compute_ema(closes[:-1], 21) if len(closes) > 21 else None
     vol_ratio = compute_volume_ratio(volumes)
 
-    # EMA 크로스 판단
-    if ema9 > ema21:
-        ema_signal = "골든크로스 (단기>장기, 상승)"
+    # EMA 크로스 판단 — 진짜 크로스오버인지 확인
+    is_golden_crossover = (
+        ema9 > ema21 and
+        prev_ema9 is not None and prev_ema21 is not None and
+        prev_ema9 <= prev_ema21
+    )
+    if is_golden_crossover:
+        ema_signal = "골든크로스 발생 (교차 확인)"
+    elif ema9 > ema21:
+        ema_signal = "상승 추세 (단기>장기)"
     elif ema9 < ema21:
         ema_signal = "데드크로스 (단기<장기, 하락)"
     else:
@@ -204,7 +214,7 @@ def analyze_symbol(code: str, market: str = "us") -> dict:
         "change_pct": round((current - prev) / prev * 100, 2) if prev > 0 else 0,
         "rsi": {"value": rsi, "signal": rsi_signal},
         "bollinger": {**bb, "signal": bb_signal},
-        "ema": {"ema9": ema9, "ema21": ema21, "signal": ema_signal},
+        "ema": {"ema9": ema9, "ema21": ema21, "signal": ema_signal, "is_golden_crossover": is_golden_crossover},
         "volume_ratio": {"value": vol_ratio, "signal": vol_signal},
         "tech_score": tech_score,
         "tech_grade": "A" if tech_score >= 70 else "B" if tech_score >= 55 else "C" if tech_score >= 40 else "D",

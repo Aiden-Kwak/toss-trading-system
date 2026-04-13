@@ -328,6 +328,9 @@ if __name__ == "__main__":
     elif cmd == "signal":
         notify_signal(args.get("symbol", ""), args.get("action", ""), args.get("reason", ""),
                       float(args.get("profit_rate", 0)))
+    elif cmd == "scan":
+        _send([{"title": "🔍 스캔 결과", "description": args.get("detail", ""),
+                "color": BLUE, "timestamp": datetime.utcnow().isoformat(), "footer": _footer()}])
     elif cmd == "daemon":
         notify_daemon_status(args.get("status", ""), args.get("detail", ""))
     elif cmd == "error":

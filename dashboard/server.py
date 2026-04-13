@@ -24,14 +24,14 @@ CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/config.json"
 # venv Python (yfinance 등 의존성 포함)
 VENV_PYTHON = REPO_DIR / ".venv" / "bin" / "python3"
 PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else "python3"
-TOSS_BIN = Path(os.environ.get("PATH", "").split(":")[0]) / "tossctl" if "tossinvest" in os.environ.get("PATH", "") else Path.home() / "Desktop/Personal/Stock/tossinvest-cli/bin/tossctl"
+TOSS_BIN = Path(os.environ.get("PATH", "").split(":")[0]) / "tossctl" if "tossinvest" in os.environ.get("PATH", "") else Path.home() / "Desktop/Auto-trader/tossinvest-cli/bin/tossctl"
 
 # tossctl 환경변수
 TOSS_ENV = {
     **os.environ,
-    "PATH": f"{Path.home()}/Desktop/Personal/Stock/tossinvest-cli/bin:{os.environ.get('PATH', '')}",
-    "TOSSCTL_AUTH_HELPER_DIR": str(Path.home() / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"),
-    "TOSSCTL_AUTH_HELPER_PYTHON": str(Path.home() / "Desktop/Personal/Stock/tossinvest-cli/auth-helper/.venv/bin/python3"),
+    "PATH": f"{Path.home()}/Desktop/Auto-trader/tossinvest-cli/bin:{os.environ.get('PATH', '')}",
+    "TOSSCTL_AUTH_HELPER_DIR": str(Path.home() / "Desktop/Auto-trader/tossinvest-cli/auth-helper"),
+    "TOSSCTL_AUTH_HELPER_PYTHON": str(Path.home() / "Desktop/Auto-trader/tossinvest-cli/auth-helper/.venv/bin/python3"),
 }
 
 
@@ -433,6 +433,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             cmd = [PYTHON, str(SCRIPTS_DIR / "technical-indicators.py"), "ranking", "--size", params.get("size", "20")]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:300]})
+
+        elif path == "/api/screener/golden-cross":
+            cmd_args = [PYTHON, str(SCRIPTS_DIR / "golden-cross-scanner.py"), "scan"]
+            if params.get("market"): cmd_args.extend(["--market", params["market"]])
+            result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=180, env=TOSS_ENV)
+            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr[:500]})
 
         elif path == "/api/screener/scan":
             cmd_args = [PYTHON, str(SCRIPTS_DIR / "stock-screener.py"), "scan"]

@@ -31,8 +31,8 @@ WATCHLIST_FILE = CONFIG_DIR / "watchlist.json"
 DAEMON_STATE_FILE = CONFIG_DIR / "daemon-state.json"
 
 # 경로: 환경변수 우선, 없으면 기본값 사용
-_default_bin = HOME / "Desktop/Personal/Stock/tossinvest-cli/bin/tossctl"
-_default_helper = HOME / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"
+_default_bin = HOME / "Desktop/Auto-trader/tossinvest-cli/bin/tossctl"
+_default_helper = HOME / "Desktop/Auto-trader/tossinvest-cli/auth-helper"
 TOSS_BIN = Path(os.environ.get("TOSSCTL_BIN", str(_default_bin)))
 TOSS_HELPER_DIR = os.environ.get("TOSSCTL_AUTH_HELPER_DIR", str(_default_helper))
 TOSS_HELPER_PY = os.environ.get("TOSSCTL_AUTH_HELPER_PYTHON", str(Path(TOSS_HELPER_DIR) / ".venv/bin/python3"))
@@ -137,11 +137,13 @@ def run_tossctl(*args, timeout=15) -> dict | list | None:
 
 
 def run_script(script_name: str, *args, timeout=30) -> dict | list | None:
-    """scripts/ 디렉토리의 Python 스크립트 실행"""
+    """scripts/ 디렉토리의 Python 스크립트 실행 (venv python 우선)"""
     try:
+        venv_py = SCRIPTS_DIR.parent / ".venv" / "bin" / "python3"
+        python_bin = str(venv_py) if venv_py.exists() else "python3"
         env = {**os.environ, "TOSS_TRADE_MODE": os.environ.get("TOSS_TRADE_MODE", "live")}
         result = subprocess.run(
-            ["python3", str(SCRIPTS_DIR / script_name), *args],
+            [python_bin, str(SCRIPTS_DIR / script_name), *args],
             capture_output=True, text=True, timeout=timeout, env=env
         )
         if result.returncode == 0:
@@ -193,24 +195,94 @@ def send_notification(title: str, msg: str):
 
 
 def is_market_open(market: str = "us") -> bool:
-    """장 시간인지 확인 (KST 기준 명시)"""
+    """장 시간인지 확인 (KST 기준)"""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("Asia/Seoul"))
     except ImportError:
-        now = datetime.now()  # 폴백: 시스템 시간 (KST 가정)
+        now = datetime.now()
 
     hour, minute = now.hour, now.minute
-    weekday = now.weekday()
-    if weekday >= 5:  # 주말
-        return False
+    weekday = now.weekday()  # 0=Mon ~ 6=Sun
+
+    if market == "auto":
+        return get_active_market() is not None
     if market == "kr":
-        # 코스피/코스닥: 09:00~15:30 KST
-        return 9 <= hour < 15 or (hour == 15 and minute <= 30)
+        return weekday < 5 and _is_kr_open(hour, minute)
     else:
-        # US: 22:30~05:00 KST (겨울) / 21:30~04:00 KST (서머타임)
-        # 넉넉하게 21:00~06:00으로 설정
-        return hour >= 21 or hour < 6
+        # US: hour >= 21 → 같은 요일(월~금), hour < 6 → 전날 세션(화~토)
+        if hour >= 21 and weekday < 5:
+            return True
+        if hour < 6 and 1 <= weekday <= 5:
+            return True
+        return False
+
+
+def _is_kr_open(hour: int, minute: int) -> bool:
+    """코스피/코스닥: 09:00~15:30 KST"""
+    return 9 <= hour < 15 or (hour == 15 and minute <= 30)
+
+
+def _is_us_open(hour: int) -> bool:
+    """US: 21:00~06:00 KST (서머타임 포함 넉넉하게)"""
+    return hour >= 21 or hour < 6
+
+
+def get_active_market() -> str | None:
+    """현재 열려 있는 시장 반환. 둘 다 닫혀있으면 None."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+    except ImportError:
+        now = datetime.now()
+    hour, minute = now.hour, now.minute
+    weekday = now.weekday()  # 0=Mon ~ 6=Sun
+
+    # KR: 평일(월~금) 09:00~15:30 KST
+    if weekday < 5 and _is_kr_open(hour, minute):
+        return "kr"
+
+    # US: KST 기준 장시간은 21:00~06:00이지만,
+    #   hour >= 21 → US 같은 요일 → KST 월~금(0~4)이면 OK
+    #   hour < 6  → US 전날 세션 → KST 화~토(1~5)이어야 US 평일
+    if hour >= 21 and weekday < 5:
+        return "us"
+    if hour < 6 and 1 <= weekday <= 5:
+        return "us"
+
+    return None
+
+
+def _seconds_until_next_market_open() -> int:
+    """다음 장 시작(KST)까지 남은 초. KR 09:00 / US 21:00 중 가까운 쪽."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+    except ImportError:
+        now = datetime.now()
+
+    today = now.date()
+    candidates = []
+
+    for day_offset in range(7):
+        d = today + timedelta(days=day_offset)
+        wd = d.weekday()
+        # KR: 평일 09:00
+        if wd < 5:
+            target = datetime(d.year, d.month, d.day, 9, 0, tzinfo=now.tzinfo)
+            if target > now:
+                candidates.append(target)
+        # US: 평일 21:00 (KST) → US 같은 요일
+        if wd < 5:
+            target = datetime(d.year, d.month, d.day, 21, 0, tzinfo=now.tzinfo)
+            if target > now:
+                candidates.append(target)
+
+    if not candidates:
+        return 600
+
+    nearest = min(candidates)
+    return max(int((nearest - now).total_seconds()), 60)
 
 
 # ─── 핵심 사이클 ───
@@ -235,31 +307,37 @@ def check_maintenance() -> bool:
     return False
 
 
-def monitor_positions(state: DaemonState, config: dict) -> list:
-    """보유 포지션 손절/익절 체크. 매도 필요한 시그널 반환."""
+def monitor_positions(state: DaemonState, config: dict) -> tuple:
+    """보유 포지션 손절/익절 체크. (매도시그널 리스트, 전체포지션 리스트) 반환."""
     positions = run_tossctl("portfolio", "positions")
     if not isinstance(positions, list):
-        return []
+        return [], []
 
     result = run_script("signal-engine.py", "check-positions",
                         "--positions", json.dumps(positions),
                         "--config", json.dumps(config))
 
     if not isinstance(result, list):
-        return []
+        return [], positions
 
     sell_signals = [s for s in result if s.get("action", "").startswith("SELL")]
-    return sell_signals
+    return sell_signals, positions
 
 
 def check_risk_gate(state: DaemonState, config: dict) -> bool:
-    """리스크 게이트 통과 여부"""
+    """리스크 게이트 통과 여부 (보호종목은 포지션 한도에서 제외)"""
     summary = run_tossctl("account", "summary")
     positions = run_tossctl("portfolio", "positions")
     if not isinstance(summary, dict) or summary.get("_error"):
         return False
 
-    active = len(positions) if isinstance(positions, list) else 0
+    protected = load_protected()
+    active = sum(
+        1 for p in positions
+        if isinstance(positions, list)
+        and p.get("quantity", 0) > 0
+        and p.get("symbol", p.get("product_code", "")) not in protected
+    ) if isinstance(positions, list) else 0
 
     result = run_script("signal-engine.py", "risk-gate",
                         "--portfolio", json.dumps(summary),
@@ -272,11 +350,12 @@ def check_risk_gate(state: DaemonState, config: dict) -> bool:
     return False
 
 
-def find_buy_candidates(config: dict) -> list:
+def find_buy_candidates(config: dict, market: str = "us") -> list:
     """스크리너로 매수 후보 탐색 + 기술적 지표 + 추세추종"""
     result = run_script("stock-screener.py", "scan",
-                        "--source", "watchlist",
-                        timeout=30)
+                        "--source", "all",
+                        "--market", market,
+                        timeout=180)
 
     if not isinstance(result, dict):
         return []
@@ -295,16 +374,17 @@ def find_buy_candidates(config: dict) -> list:
                           "--market", "kr" if c.get("market_code", "") in ("KSP", "KSQ") else "us")
 
         if isinstance(tech, dict) and not tech.get("_error") and not tech.get("error"):
-            # 추세추종 판단: 골든크로스 + 상승 추세
-            ema9 = tech.get("ema", {}).get("ema9", 0)
-            ema21 = tech.get("ema", {}).get("ema21", 0)
-            is_uptrend = ema9 > ema21 and tech.get("current_price", 0) > ema21
+            # tech API(tossctl, KRW 기준) 현재가로 덮어쓰기 — yfinance는 USD라 수량 계산 오류 방지
+            tech_price = tech.get("current_price", 0)
+            if tech_price > 0:
+                c["current_price"] = tech_price
 
-            if is_uptrend:
-                # 추세추종 후보 (등급 무관)
+            # 추세추종 판단: 진짜 골든크로스(교차 확인) + 채점 B 이상
+            is_crossover = tech.get("ema", {}).get("is_golden_crossover", False)
+
+            if is_crossover and c.get("grade") in ("A", "B"):
                 c["grade"] = "T"
                 c["strategy"] = "trend_follow"
-                c["score"] = 99
                 c["tech"] = tech
                 enriched.append(c)
                 continue
@@ -344,13 +424,14 @@ def _generate_auto_lesson(symbol: str, pnl: float, exit_reason: str, signal: dic
 
 
 def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run: bool,
-                grade: str = "A", score: float = 0, reason: str = "") -> bool:
-    """매수 실행"""
-    log(f"  BUY: {symbol} x{qty} @ {price} ({grade}등급, {score}점)")
+                grade: str = "A", score: float = 0, reason: str = "",
+                market: str = "us") -> bool:
+    """매수 실행 (시장가 주문, 미체결 시 자동 취소)"""
+    order_type_label = "지정가" if market == "us" else "시장가"
+    log(f"  BUY: {symbol} x{qty} @ ~{price} ({grade}등급, {score}점) [{order_type_label}]")
 
     if dry_run:
         log(f"  [DRY RUN] 주문 스킵")
-        # dry-run에서도 기록 (시뮬레이션 추적용)
         run_script("trade-logger.py", "log",
                     "--symbol", symbol, "--side", "buy",
                     "--qty", str(qty), "--price", str(price),
@@ -360,42 +441,142 @@ def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run
         state.today_trades += 1
         return True
 
-    # quick-order.sh 실행
+    # 주문 실행 (US: 지정가 +1% 슬리피지, KR: 시장가)
+    if market == "us":
+        limit_price = int(price * 1.01)  # +1% 슬리피지: 현재가보다 높게 걸어 즉시 체결
+        order_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
+                      "--symbol", symbol, "--side", "buy",
+                      "--qty", str(qty), "--price", str(limit_price),
+                      "--market", market]
+    else:
+        order_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
+                      "--symbol", symbol, "--side", "buy",
+                      "--qty", str(qty), "--type", "market",
+                      "--market", market]
+
     result = subprocess.run(
-        ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
-         "--symbol", symbol, "--side", "buy",
-         "--qty", str(qty), "--price", str(int(price))],
-        capture_output=True, text=True, timeout=30, env=TOSS_ENV
+        order_args, capture_output=True, text=True, timeout=30, env=TOSS_ENV
     )
 
     if result.returncode == 0:
-        log(f"  BUY SUCCESS: {symbol}")
-        run_script("notify.py", "trade", "--symbol", symbol, "--side", "buy",
-                    "--price", str(price), "--qty", str(qty), "--grade", grade, "--score", str(score), "--strategy", reason)
-        log_result = run_script("trade-logger.py", "log",
-                    "--symbol", symbol, "--side", "buy",
-                    "--qty", str(qty), "--price", str(price),
-                    "--grade", grade, "--score", str(score),
-                    "--reason", reason or "autotrade",
-                    "--mode", "autotrade")
-        if isinstance(log_result, dict) and log_result.get("_error"):
-            state.record_error(f"BUY {symbol} 성공했지만 기록 실패: {log_result['_error']}")
-            send_notification("기록 오류", f"{symbol} 매수 기록 실패 - 수동 확인 필요")
-        state.today_trades += 1
-        return True
+        # 주문 접수 후 체결 확인 (최대 60초, 10초 간격)
+        order_info = {}
+        try:
+            order_info = json.loads(result.stdout)
+        except Exception:
+            pass
+        order_id = order_info.get("order_id", "") or order_info.get("raw", {}).get("orderId", "")
+
+        filled_price = _wait_for_fill(symbol, order_id, timeout=60)
+        if filled_price:
+            log(f"  BUY FILLED: {symbol} @ {filled_price}")
+            run_script("notify.py", "trade", "--symbol", symbol, "--side", "buy",
+                        "--price", str(filled_price), "--qty", str(qty),
+                        "--grade", grade, "--score", str(score), "--strategy", reason)
+            run_script("trade-logger.py", "log",
+                        "--symbol", symbol, "--side", "buy",
+                        "--qty", str(qty), "--price", str(filled_price),
+                        "--grade", grade, "--score", str(score),
+                        "--reason", reason or "autotrade",
+                        "--mode", "autotrade")
+            state.today_trades += 1
+            return True
+        else:
+            # 미체결 → 자동 취소
+            log(f"  BUY TIMEOUT: {symbol} 60초 미체결 → 취소 시도")
+            _cancel_pending(symbol, order_id)
+            run_script("notify.py", "error", "--message", f"{symbol} 매수 미체결 → 자동 취소")
+            return False
     else:
         log(f"  BUY FAILED: {result.stderr[:200]}")
         state.record_error(f"BUY {symbol} failed: {result.stderr[:100]}")
         return False
 
 
-def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool) -> bool:
-    """매도 실행"""
+def _wait_for_fill(symbol: str, order_id: str, timeout: int = 60) -> float | None:
+    """주문 체결 대기. 체결되면 체결가 반환, 타임아웃이면 None."""
+    elapsed = 0
+    interval = 10
+    while elapsed < timeout:
+        time.sleep(interval)
+        elapsed += interval
+        # 포지션에 해당 종목이 생겼는지 확인
+        positions = run_tossctl("portfolio", "positions")
+        if isinstance(positions, list):
+            for p in positions:
+                p_sym = p.get("symbol", p.get("product_code", ""))
+                if p_sym == symbol and p.get("quantity", 0) > 0:
+                    price_val = (p.get("average_price") or p.get("avg_price")
+                                 or p.get("purchase_price") or p.get("current_price") or 1)
+                    return float(price_val)
+        # order show로 직접 확인
+        if order_id:
+            order = run_tossctl("order", "show", order_id)
+            if isinstance(order, dict):
+                status = order.get("status", "").lower()
+                if status in ("filled", "executed", "complete"):
+                    return order.get("filled_price", order.get("price", 0))
+                if status in ("cancelled", "rejected", "expired"):
+                    return None
+    return None
+
+
+def _wait_for_sell_fill(symbol: str, order_id: str, timeout: int = 60) -> bool:
+    """매도 체결 대기. 포지션이 사라지면 True, 타임아웃이면 False."""
+    elapsed = 0
+    interval = 10
+    while elapsed < timeout:
+        time.sleep(interval)
+        elapsed += interval
+        # 포지션에서 해당 종목이 사라졌는지 확인
+        positions = run_tossctl("portfolio", "positions")
+        if isinstance(positions, list):
+            found = any(
+                p.get("symbol", p.get("product_code", "")) == symbol and p.get("quantity", 0) > 0
+                for p in positions
+            )
+            if not found:
+                return True
+        # order show로 직접 확인
+        if order_id:
+            order = run_tossctl("order", "show", order_id)
+            if isinstance(order, dict):
+                status = order.get("status", "").lower()
+                if status in ("filled", "executed", "complete"):
+                    return True
+                if status in ("cancelled", "rejected", "expired"):
+                    return False
+    return False
+
+
+def _cancel_pending(symbol: str, order_id: str):
+    """미체결 주문 취소"""
+    if order_id:
+        subprocess.run(
+            ["bash", "-c", f"tossctl order cancel --order-id {order_id}"],
+            capture_output=True, text=True, timeout=15, env=TOSS_ENV
+        )
+        log(f"  CANCEL: {symbol} (order_id={order_id})")
+    else:
+        log(f"  CANCEL: {symbol} order_id 없음 — 수동 확인 필요")
+
+
+def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool,
+                 market: str = "us") -> bool:
+    """매도 실행 (시장가 주문, 미체결 시 자동 취소)"""
     price = signal.get("current_price", 0)
-    log(f"  SELL: {symbol} @ {price} ({signal.get('action', '')})")
+    order_type_label = "지정가" if market == "us" else "시장가"
+    log(f"  SELL: {symbol} @ ~{price} ({signal.get('action', '')}) [{order_type_label}]")
 
     if dry_run:
         log(f"  [DRY RUN] 주문 스킵")
+        pnl = signal.get("profit_rate", 0)
+        state.today_pnl += pnl
+        state.today_trades += 1
+        if pnl < 0:
+            state.consecutive_losses += 1
+        else:
+            state.consecutive_losses = 0
         return True
 
     # 보유 수량 확인
@@ -409,14 +590,39 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool) -
 
     qty = int(pos["quantity"]) if pos["quantity"] == int(pos["quantity"]) else pos["quantity"]
 
+    # 주문 실행 (US: 지정가 -1% 슬리피지, KR: 시장가)
+    if market == "us":
+        limit_price = int(price * 0.99)  # -1% 슬리피지: 현재가보다 낮게 걸어 즉시 체결
+        sell_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
+                     "--symbol", symbol, "--side", "sell",
+                     "--qty", str(qty), "--price", str(limit_price),
+                     "--market", market]
+    else:
+        sell_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
+                     "--symbol", symbol, "--side", "sell",
+                     "--qty", str(qty), "--type", "market",
+                     "--market", market]
+
     result = subprocess.run(
-        ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
-         "--symbol", symbol, "--side", "sell",
-         "--qty", str(qty), "--price", str(int(price))],
+        sell_args,
         capture_output=True, text=True, timeout=30, env=TOSS_ENV
     )
 
     if result.returncode == 0:
+        # 체결 확인 (최대 60초)
+        order_info = {}
+        try:
+            order_info = json.loads(result.stdout)
+        except Exception:
+            pass
+        order_id = order_info.get("order_id", "") or order_info.get("raw", {}).get("orderId", "")
+
+        filled = _wait_for_sell_fill(symbol, order_id, timeout=60)
+        if not filled:
+            log(f"  SELL TIMEOUT: {symbol} 60초 미체결 → 취소 시도")
+            _cancel_pending(symbol, order_id)
+            run_script("notify.py", "error", "--message", f"{symbol} 매도 미체결 → 자동 취소")
+            return False
         log(f"  SELL SUCCESS: {symbol}")
         pnl = signal.get("profit_rate", 0)
         state.today_pnl += pnl
@@ -489,10 +695,19 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             run_script("notify.py", "daemon", "--status", "paused_maintenance", "--detail", "토스증권 시스템 점검 중")
         return False
 
-    # 3. 장 시간 체크
-    if not is_market_open(market):
-        log(f"  장 휴장 ({market}). 스킵.")
-        return True  # 에러는 아님
+    # 3. 장 시간 체크 (auto 모드: 열려 있는 시장 자동 판별)
+    if market == "auto":
+        active = get_active_market()
+        if not active:
+            log("  장 휴장 (KR/US 모두). 스킵.")
+            return True
+        effective_market = active
+        log(f"  활성 시장: {effective_market.upper()}")
+    else:
+        if not is_market_open(market):
+            log(f"  장 휴장 ({market}). 스킵.")
+            return True
+        effective_market = market
 
     # 4. 일일 손실 한도 체크 (데몬 운용 금액 기준, 보호종목 무관)
     total_asset = 0
@@ -501,14 +716,13 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
     if isinstance(summary, dict) and not summary.get("_error"):
         total_asset = summary.get("total_asset_amount", 0)
         orderable_krw = summary.get("orderable_amount_krw", 0)
-    # 분모: 데몬이 운용하는 규모만 (주문가능금액 + 오늘 실현 손익)
-    daemon_capital = orderable_krw + abs(state.today_pnl)
-    if daemon_capital > 0:
-        loss_pct = state.today_pnl / daemon_capital * 100
+    # today_pnl은 퍼센트 누적값 (예: -3.0 = -3%). 직접 한도와 비교.
+    if True:
+        loss_pct = state.today_pnl  # 이미 퍼센트 단위
         limit = config.get("daily_loss_limit_pct", -2.0)
         if loss_pct <= limit:
             state.status = DaemonStatus.PAUSED_LOSS_LIMIT
-            log(f"  일일 손실 한도 도달: {loss_pct:.2f}% (한도: {limit}%, 운용금: {daemon_capital:,.0f}원)")
+            log(f"  일일 손실 한도 도달: {loss_pct:.2f}% (한도: {limit}%)")
             send_notification("거래 중단", f"일일 손실 {loss_pct:.1f}%로 한도 도달")
             run_script("notify.py", "daemon", "--status", "paused_loss_limit",
                         "--detail", f"일일 손실 {loss_pct:.1f}% (한도 {limit}%)")
@@ -529,7 +743,7 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         run_script("notify.py", "daemon", "--status", "running", "--detail", "냉각기 종료. 거래 재개")
 
     # 6. 보유 포지션 손절/익절 체크
-    sell_signals = monitor_positions(state, config)
+    sell_signals, positions = monitor_positions(state, config)
     for sig in sell_signals:
         sym = sig.get("symbol", "")
         if sym in protected:
@@ -540,7 +754,9 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
                     "--action", sig.get("action", ""),
                     "--reason", sig.get("reason", ""),
                     "--profit_rate", str(sig.get("profit_rate", 0)))
-        execute_sell(sym, sig, state, dry_run)
+        # 한국 종목인지 판별
+        sell_market = "kr" if (sym.isdigit() and len(sym) == 6) or sym.startswith("A") else effective_market
+        execute_sell(sym, sig, state, dry_run, market=sell_market)
 
     # 7. 리스크 게이트
     if not check_risk_gate(state, config):
@@ -549,8 +765,16 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         return True
 
     # 8. 매수 후보 탐색
-    candidates = find_buy_candidates(config)
-    if not candidates:
+    candidates = find_buy_candidates(config, effective_market)
+
+    # 스캔/채점 결과 알림
+    if candidates:
+        top3 = candidates[:3]
+        scan_detail = ", ".join(f"{c.get('symbol','')}({c.get('grade','?')}/{c.get('score_pct',0)}%)" for c in top3)
+        log(f"  스캔 결과: {len(candidates)}종목 — {scan_detail}")
+        run_script("notify.py", "scan", "--detail",
+                   f"{effective_market.upper()} {len(candidates)}종목 발견: {scan_detail}")
+    else:
         log("  매수 후보 없음")
         state.status = DaemonStatus.RUNNING
         return True
@@ -588,6 +812,15 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             if price <= 0:
                 continue
 
+            # US 주식 가격이 USD일 경우(yfinance 출처) KRW 변환
+            # tossctl KRW 기준: US 주식은 보통 50,000원~수백만원. USD면 수백달러 이하.
+            buy_market = "kr" if c.get("market_code", "") in ("KSP", "KSQ") else "us"
+            if buy_market == "us" and price < 5000:
+                # USD 가격 → KRW 변환 (환율 근사 1500 + 슬리피지 여유)
+                fx_rate = 1500
+                price = price * fx_rate
+                log(f"  {sym} USD→KRW 변환: ${price/fx_rate:.2f} → {price:,.0f}원")
+
             # 주문가능금액을 남은 슬롯에 균등 배분
             per_slot = orderable / (slots - bought) if (slots - bought) > 0 else 0
             max_invest = min(per_slot, total_asset * config.get("max_position_pct", 10) / 100)
@@ -602,7 +835,8 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             strategy = c.get("strategy", "daytrade")
             if execute_buy(sym, price, qty, state, dry_run,
                            grade=c.get("grade", "?"), score=c.get("score", 0),
-                           reason=f"{strategy}:{c.get('recommendation', '')}"):
+                           reason=f"{strategy}:{c.get('recommendation', '')}",
+                           market=buy_market):
                 orderable -= cost  # 잔여 주문가능금액 차감
                 current_positions.add(sym)
                 bought += 1
@@ -679,7 +913,7 @@ def main():
                 args[key] = "true"
 
     interval = int(args.get("interval", "300"))  # 5분 기본
-    market = args.get("market", "us")
+    market = args.get("market", "auto")
     dry_run = "dry-run" in args
 
     # notify.py에 모드 전달

@@ -11,9 +11,9 @@ user_invocable: true
 ## 환경변수 (모든 tossctl 명령 실행 전 설정 필수)
 
 ```bash
-export PATH="/Users/aiden-kwak/Desktop/Personal/Stock/tossinvest-cli/bin:$PATH"
-export TOSSCTL_AUTH_HELPER_DIR="/Users/aiden-kwak/Desktop/Personal/Stock/tossinvest-cli/auth-helper"
-export TOSSCTL_AUTH_HELPER_PYTHON="/Users/aiden-kwak/Desktop/Personal/Stock/tossinvest-cli/auth-helper/.venv/bin/python3"
+export PATH="/Users/aiden/Desktop/Auto-trader/tossinvest-cli/bin:$PATH"
+export TOSSCTL_AUTH_HELPER_DIR="/Users/aiden/Desktop/Auto-trader/tossinvest-cli/auth-helper"
+export TOSSCTL_AUTH_HELPER_PYTHON="/Users/aiden/Desktop/Auto-trader/tossinvest-cli/auth-helper/.venv/bin/python3"
 ```
 
 ## 워크플로우

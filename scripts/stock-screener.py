@@ -45,9 +45,9 @@ except ImportError:
 # tossctl 환경
 TOSS_ENV = {
     **__import__("os").environ,
-    "PATH": f"{Path.home()}/Desktop/Personal/Stock/tossinvest-cli/bin:{__import__('os').environ.get('PATH', '')}",
-    "TOSSCTL_AUTH_HELPER_DIR": str(Path.home() / "Desktop/Personal/Stock/tossinvest-cli/auth-helper"),
-    "TOSSCTL_AUTH_HELPER_PYTHON": str(Path.home() / "Desktop/Personal/Stock/tossinvest-cli/auth-helper/.venv/bin/python3"),
+    "PATH": f"{Path.home()}/Desktop/Auto-trader/tossinvest-cli/bin:{__import__('os').environ.get('PATH', '')}",
+    "TOSSCTL_AUTH_HELPER_DIR": str(Path.home() / "Desktop/Auto-trader/tossinvest-cli/auth-helper"),
+    "TOSSCTL_AUTH_HELPER_PYTHON": str(Path.home() / "Desktop/Auto-trader/tossinvest-cli/auth-helper/.venv/bin/python3"),
 }
 
 
@@ -122,9 +122,11 @@ def screen_watchlist() -> list:
 # ─── 소스 2: 자동 스크리닝 (yfinance) ───
 
 def screen_auto(market: str = "us", top_n: int = 20) -> list:
-    """거래량 급증, 갭업 종목을 yfinance로 탐색"""
+    """거래량 급증, 갭업 종목을 yfinance로 탐색 (병렬 처리)"""
     if not HAS_YF:
         return []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # 스크리닝 유니버스: 외부 파일에서 로드
     universe_file = Path(__file__).parent.parent / "screener-universe.json"
@@ -143,30 +145,20 @@ def screen_auto(market: str = "us", top_n: int = 20) -> list:
         else:
             universe = []
 
-    candidates = []
-
-    # 최근 2일 데이터로 거래량 변화, 갭 확인
-    for sym in universe:
+    def _check_symbol(sym):
         try:
-            ticker = yf.Ticker(sym)
-            hist = ticker.history(period="5d")
+            hist = yf.Ticker(sym).history(period="5d")
             if len(hist) < 2:
-                continue
+                return None
 
             today = hist.iloc[-1]
             yesterday = hist.iloc[-2]
             avg_vol_5d = hist["Volume"].mean()
 
-            # 거래량 급증 (오늘 거래량 > 5일 평균의 1.5배)
             vol_spike = today["Volume"] / avg_vol_5d if avg_vol_5d > 0 else 1
-
-            # 갭 (오늘 시가 vs 어제 종가)
             gap_pct = (today["Open"] - yesterday["Close"]) / yesterday["Close"] if yesterday["Close"] > 0 else 0
-
-            # 일일 등락
             change_pct = (today["Close"] - yesterday["Close"]) / yesterday["Close"] if yesterday["Close"] > 0 else 0
 
-            # 필터: 거래량 급증 OR 갭업 2%+ OR 갭다운 -3%+
             is_interesting = (
                 vol_spike >= 1.5 or
                 gap_pct >= 0.02 or
@@ -175,11 +167,10 @@ def screen_auto(market: str = "us", top_n: int = 20) -> list:
             )
 
             if is_interesting:
-                # tossctl 호환 형식으로 변환
                 clean_sym = sym.replace(".KS", "").replace(".KQ", "")
-                candidates.append({
+                return {
                     "symbol": clean_sym,
-                    "name": ticker.info.get("shortName", sym),
+                    "name": clean_sym,
                     "last": round(today["Close"], 2),
                     "reference_price": round(yesterday["Close"], 2),
                     "open": round(today["Open"], 2),
@@ -191,9 +182,18 @@ def screen_auto(market: str = "us", top_n: int = 20) -> list:
                     "_source": "auto",
                     "_vol_spike": round(vol_spike, 2),
                     "_gap_pct": round(gap_pct * 100, 2),
-                })
+                }
+            return None
         except Exception:
-            continue
+            return None
+
+    candidates = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(_check_symbol, sym): sym for sym in universe}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                candidates.append(result)
 
     # 거래량 급증 + 변동폭 기준 정렬
     candidates.sort(key=lambda x: x.get("_vol_spike", 0) * abs(x.get("change_rate", 0)), reverse=True)
@@ -313,7 +313,7 @@ def _load_loss_history() -> dict:
 def scan(args: dict) -> dict:
     """통합 스크리닝 실행"""
     source = args.get("source", "all")
-    market = args.get("market", "us")
+    market = args.get("market", "all")
     news_symbols = [s.strip() for s in args.get("news-symbols", "").split(",") if s.strip()]
 
     all_candidates = []
@@ -327,7 +327,17 @@ def scan(args: dict) -> dict:
 
     # 소스 2: 자동 스크리닝
     if source in ("all", "auto"):
-        auto = screen_auto(market)
+        if market == "all":
+            auto_us = screen_auto("us")
+            auto_nasdaq = screen_auto("nasdaq100")
+            auto_kr = screen_auto("kr")
+            auto = auto_us + auto_nasdaq + auto_kr
+        elif market == "us":
+            auto_us = screen_auto("us")
+            auto_nasdaq = screen_auto("nasdaq100")
+            auto = auto_us + auto_nasdaq
+        else:
+            auto = screen_auto(market)
         all_candidates.extend(auto)
         sources_used.append(f"auto({len(auto)})")
 
