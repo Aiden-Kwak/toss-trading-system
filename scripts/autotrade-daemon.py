@@ -774,8 +774,9 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
                     "--reason", sig.get("reason", ""),
                     "--profit_rate", str(sig.get("profit_rate", 0)))
         # 한국 종목인지 판별
-        sell_market = "kr" if (sym.isdigit() and len(sym) == 6) or sym.startswith("A") else effective_market
-        execute_sell(sym, sig, state, dry_run, market=sell_market)
+        sell_market = "kr" if (sym.isdigit() and len(sym) == 6) or sym.startswith("A") else "us"
+        if execute_sell(sym, sig, state, dry_run, market=sell_market):
+            _cycle_sells += 1
 
     # 7. 리스크 게이트
     if not check_risk_gate(state, config):
@@ -798,70 +799,122 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         state.status = DaemonStatus.RUNNING
         return True
 
-    # 9. 매수 실행 — 포지션 한도까지 병렬 진입
-    max_pos = config.get("max_positions", 2)
-    # 현재 보유 포지션 수 (보호종목 제외)
+    # 9. 매수 실행 — 시장별 포지션 한도
+    max_pos_kr = config.get("max_positions_kr", config.get("max_positions", 3))
+    max_pos_us = config.get("max_positions_us", config.get("max_positions", 3))
+    # 현재 보유 포지션 수 (보호종목 제외, 시장별 분류)
     current_positions = set()
+    current_kr = set()
+    current_us = set()
     if isinstance(positions, list):
         for p in positions:
             sym_p = p.get("symbol", p.get("product_code", ""))
             if p.get("quantity", 0) > 0 and sym_p not in protected:
                 current_positions.add(sym_p)
+                mkt_code = p.get("market_code", p.get("market_type", ""))
+                if mkt_code in ("KSP", "KSQ") or (sym_p.isdigit() and len(sym_p) == 6) or sym_p.startswith("A"):
+                    current_kr.add(sym_p)
+                else:
+                    current_us.add(sym_p)
 
-    slots = max_pos - len(current_positions)
-    if slots <= 0:
-        log(f"  포지션 한도 도달 ({len(current_positions)}/{max_pos}) → 매수 스킵")
+    slots_kr = max_pos_kr - len(current_kr)
+    slots_us = max_pos_us - len(current_us)
+    log(f"  포지션: KR {len(current_kr)}/{max_pos_kr} | US {len(current_us)}/{max_pos_us}")
+    if slots_kr <= 0 and slots_us <= 0:
+        log(f"  포지션 한도 도달 → 매수 스킵")
     else:
-        orderable = 0
+        # 통화별 예산 분리: KR=원화, US=달러 (강제 환전 방지)
+        orderable_krw = 0  # 국내 주문가능 원화
+        orderable_usd = 0  # 해외 주문가능 달러
+        fx_rate = 1450     # KRW/USD 환율 (주문가 변환용)
         if isinstance(summary, dict) and not summary.get("_error"):
-            orderable = summary.get("orderable_amount_krw", 0)
+            markets = summary.get("markets", {})
+            orderable_krw = markets.get("kr", {}).get("orderable_amount_krw", 0)
+            orderable_usd = markets.get("us", {}).get("orderable_amount_usd", 0)
+            # 환율 추정: total KRW / total USD
+            us_krw = markets.get("us", {}).get("orderable_amount_krw", 0)
+            if orderable_usd > 0 and us_krw > 0:
+                fx_rate = us_krw / orderable_usd
+        log(f"  예산: KR {orderable_krw:,.0f}원 | US ${orderable_usd:,.2f} (환율 {fx_rate:,.0f})")
 
         # 잔여 슬롯만큼 후보 순회하며 매수
-        bought = 0
+        bought_kr = 0
+        bought_us = 0
         for c in candidates:
-            if bought >= slots:
-                break
-
             sym = c.get("symbol", "")
             if sym in protected or sym in current_positions:
-                log(f"  {sym} 보호/보유 종목 → 스킵")
                 continue
 
             price = c.get("current_price", 0)
             if price <= 0:
                 continue
 
-            # US 주식 가격이 USD일 경우(yfinance 출처) KRW 변환
-            # tossctl KRW 기준: US 주식은 보통 50,000원~수백만원. USD면 수백달러 이하.
             buy_market = "kr" if c.get("market_code", "") in ("KSP", "KSQ") else "us"
-            if buy_market == "us" and price < 5000:
-                # USD 가격 → KRW 변환 (환율 근사 1500 + 슬리피지 여유)
-                fx_rate = 1500
-                price = price * fx_rate
-                log(f"  {sym} USD→KRW 변환: ${price/fx_rate:.2f} → {price:,.0f}원")
 
-            # 주문가능금액을 남은 슬롯에 균등 배분
-            per_slot = orderable / (slots - bought) if (slots - bought) > 0 else 0
-            max_invest = min(per_slot, total_asset * config.get("max_position_pct", 10) / 100)
-
-            if max_invest < price:
-                log(f"  {sym} 금액 부족 (슬롯당 {per_slot:,.0f}원 < {price:,.0f}원) → 스킵")
+            # 시장별 슬롯 잔여 체크
+            if buy_market == "us" and (slots_us - bought_us) <= 0:
+                continue
+            if buy_market == "kr" and (slots_kr - bought_kr) <= 0:
                 continue
 
-            qty = max(1, int(max_invest / price))
-            cost = qty * price
+            if buy_market == "us":
+                # --- US: 달러 예산으로 계산, 주문은 KRW 변환 ---
+                price_usd = price if price < 5000 else price / fx_rate
+                price_krw = int(price_usd * fx_rate)
 
-            strategy = c.get("strategy", "daytrade")
-            if execute_buy(sym, price, qty, state, dry_run,
-                           grade=c.get("grade", "?"), score=c.get("score", 0),
-                           reason=f"{strategy}:{c.get('recommendation', '')}",
-                           market=buy_market):
-                orderable -= cost  # 잔여 주문가능금액 차감
-                current_positions.add(sym)
-                bought += 1
+                remaining_us = slots_us - bought_us
+                per_slot_usd = orderable_usd / remaining_us if remaining_us > 0 else 0
+                max_invest_usd = min(per_slot_usd,
+                                     orderable_usd * config.get("max_position_pct", 30) / 100)
 
+                if max_invest_usd < price_usd:
+                    log(f"  {sym} USD 잔고 부족 (슬롯당 ${per_slot_usd:.2f} < ${price_usd:.2f}) → 스킵")
+                    continue
+
+                qty = max(1, int(max_invest_usd / price_usd))
+                cost_usd = qty * price_usd
+                log(f"  {sym} ${price_usd:.2f} x{qty} = ${cost_usd:.2f} (→ 주문가 {price_krw:,}원)")
+
+                strategy = c.get("strategy", "daytrade")
+                _cycle_buys_attempted += 1
+                if execute_buy(sym, price_krw, qty, state, dry_run,
+                               grade=c.get("grade", "?"), score=c.get("score", 0),
+                               reason=f"{strategy}:{c.get('recommendation', '')}",
+                               market=buy_market):
+                    orderable_usd -= cost_usd
+                    current_positions.add(sym)
+                    current_us.add(sym)
+                    bought_us += 1
+                    _cycle_buys_filled += 1
+            else:
+                # --- KR: 원화 예산으로 계산 ---
+                remaining_kr = slots_kr - bought_kr
+                per_slot_krw = orderable_krw / remaining_kr if remaining_kr > 0 else 0
+                max_invest_krw = min(per_slot_krw,
+                                     orderable_krw * config.get("max_position_pct", 30) / 100)
+
+                if max_invest_krw < price:
+                    log(f"  {sym} 원화 잔고 부족 (슬롯당 {per_slot_krw:,.0f}원 < {price:,.0f}원) → 스킵")
+                    continue
+
+                qty = max(1, int(max_invest_krw / price))
+                cost_krw = qty * price
+
+                strategy = c.get("strategy", "daytrade")
+                _cycle_buys_attempted += 1
+                if execute_buy(sym, price, qty, state, dry_run,
+                               grade=c.get("grade", "?"), score=c.get("score", 0),
+                               reason=f"{strategy}:{c.get('recommendation', '')}",
+                               market=buy_market):
+                    orderable_krw -= cost_krw
+                    current_positions.add(sym)
+                    current_kr.add(sym)
+                    bought_kr += 1
+                    _cycle_buys_filled += 1
+
+        bought = bought_kr + bought_us
         if bought > 0:
-            log(f"  {bought}종목 매수 완료 (포지션: {len(current_positions)}/{max_pos})")
+            log(f"  {bought}종목 매수 (KR {len(current_kr)}/{max_pos_kr} | US {len(current_us)}/{max_pos_us})")
 
     state.status = DaemonStatus.RUNNING
 

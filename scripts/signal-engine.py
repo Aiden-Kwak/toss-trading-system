@@ -496,6 +496,12 @@ def risk_gate(portfolio: dict, config: dict, today_pnl: float = 0, active_positi
     """
     total_asset = portfolio.get("total_asset_amount", 0)
     orderable = portfolio.get("orderable_amount_krw", 0)
+    orderable_usd = portfolio.get("orderable_amount_usd", 0)
+    # markets 하위에서 시장별 예산도 참조
+    markets = portfolio.get("markets", {})
+    if markets:
+        orderable = markets.get("kr", {}).get("orderable_amount_krw", orderable)
+        orderable_usd = markets.get("us", {}).get("orderable_amount_usd", orderable_usd)
     max_positions = config.get("max_positions", DEFAULT_CONFIG["max_positions"])
     daily_loss_limit = config.get("daily_loss_limit_pct", DEFAULT_CONFIG["daily_loss_limit_pct"])
     max_position_pct = config.get("max_position_pct", DEFAULT_CONFIG["max_position_pct"])
@@ -537,20 +543,22 @@ def risk_gate(portfolio: dict, config: dict, today_pnl: float = 0, active_positi
         all_passed = False
         blocked_reason = blocked_reason or f"동시 포지션 한도: {active_positions}/{max_positions}"
 
-    # 3. 투자 여력 — 주문가능금액이 10,000원 이상이면 패스
-    # (total_asset 기준은 보호종목 평가금이 포함되어 기준이 비현실적으로 높아짐)
-    min_invest = 10000
-    fund_ok = orderable >= min_invest
+    # 3. 투자 여력 — KRW 10,000원 이상 또는 USD $5 이상이면 패스
+    min_invest_krw = 10000
+    min_invest_usd = 5
+    fund_ok = orderable >= min_invest_krw or orderable_usd >= min_invest_usd
+    fund_desc = f"KR: {orderable:,.0f}원 | US: ${orderable_usd:,.2f}"
     checks.append({
         "name": "available_funds",
         "passed": fund_ok,
         "value": orderable,
-        "limit": round(min_invest),
-        "description": f"주문 가능: {orderable:,.0f}원 (최소: {min_invest:,.0f}원)"
+        "value_usd": orderable_usd,
+        "limit": round(min_invest_krw),
+        "description": f"주문 가능: {fund_desc}"
     })
     if not fund_ok:
         all_passed = False
-        blocked_reason = blocked_reason or f"투자 여력 부족: {orderable:,.0f}원"
+        blocked_reason = blocked_reason or f"투자 여력 부족: {fund_desc}"
 
     return {
         "passed": all_passed,

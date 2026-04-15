@@ -155,6 +155,7 @@ button.save:hover { opacity:.85; }
   <div class="tab" onclick="switchTab('backtest')">백테스트</div>
   <div class="tab" onclick="switchTab('risk')">리스크</div>
   <div class="tab" onclick="switchTab('journal')">기록</div>
+  <div class="tab" onclick="switchTab('history')">이력DB</div>
 </div>
 
 <!-- ==================== TAB 1: 대시보드 ==================== -->
@@ -356,6 +357,63 @@ button.save:hover { opacity:.85; }
 </div>
 </div>
 
+<!-- ==================== TAB 5: 이력DB ==================== -->
+<div class="tab-page" id="page-history">
+<div class="container">
+  <!-- 날짜 선택 + 통계 요약 -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">일일 통계</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="date" id="histDate" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px">
+        <button class="card-action" onclick="loadHistory()">조회</button>
+      </div>
+    </div>
+    <div id="histStats"><div class="loading">날짜를 선택하세요</div></div>
+  </div>
+
+  <!-- 거래 이력 -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">거래 이력</span>
+      <div style="display:flex;gap:6px">
+        <button class="card-action" onclick="loadHistTrades('all')">전체</button>
+        <button class="card-action" onclick="loadHistTrades('open')">보유중</button>
+        <button class="card-action" onclick="loadHistTrades('closed')">청산</button>
+      </div>
+    </div>
+    <div id="histTrades"><div class="loading">조회 버튼을 누르세요</div></div>
+  </div>
+
+  <!-- 스크리너 이력 -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">스크리닝 이력</span>
+      <button class="card-action" onclick="loadHistScreener()">조회</button>
+    </div>
+    <div id="histScreener"><div class="loading">조회 버튼을 누르세요</div></div>
+  </div>
+
+  <!-- 데몬 사이클 이력 -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">데몬 사이클</span>
+      <button class="card-action" onclick="loadHistCycles()">조회</button>
+    </div>
+    <div id="histCycles"><div class="loading">조회 버튼을 누르세요</div></div>
+  </div>
+
+  <!-- 에러 로그 -->
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">에러 로그</span>
+      <button class="card-action" onclick="loadHistErrors()">조회</button>
+    </div>
+    <div id="histErrors"><div class="loading">조회 버튼을 누르세요</div></div>
+  </div>
+</div>
+</div>
+
 <script>
 const API = '';
 function fmt(n) { return n == null ? '-' : Number(n).toLocaleString('ko-KR'); }
@@ -372,6 +430,7 @@ function switchTab(name) {
   if (name === 'screener') loadWatchlist();
   if (name === 'risk') { loadSettings(); loadRiskGate(); loadProtected(); }
   if (name === 'journal') loadTrades();
+  if (name === 'history') { document.getElementById('histDate').value = new Date().toISOString().slice(0,10); loadHistory(); }
 }
 
 // Clock
@@ -618,9 +677,9 @@ function renderScreenerResult(d) { const panel=document.getElementById('screener
 
 // Trades
 async function loadTrades() { const r=await fetch(API+'/api/trades?status=all'); const d=await r.json(); const panel=document.getElementById('tradeLog'); if(!Array.isArray(d)||d.length===0){panel.innerHTML='<div class="loading">거래 기록 없음</div>';return;}
-  let html=`<table><tr><th>종목</th><th>방향</th><th>진입가</th><th>청산가</th><th>수익률</th><th>사유</th><th>교훈</th><th>상태</th></tr>`;
+  let html=`<table><tr><th>종목</th><th>방향</th><th>진입일</th><th>진입가</th><th>청산일</th><th>청산가</th><th>수익률</th><th>사유</th><th>교훈</th><th>상태</th></tr>`;
   d.slice(-15).reverse().forEach(t=>{ const pc=(t.pnl_pct||0)>=0?'positive':'negative'; const pnl=t.pnl_pct!=null?`${t.pnl_pct>0?'+':''}${t.pnl_pct}%`:'-'; const sb=t.status==='open'?'<span class="badge badge-blue">보유</span>':'<span class="badge badge-purple">청산</span>'; const lesson=t.lesson?`<span title="${t.lesson}">${t.lesson.slice(0,15)}...</span>`:'-';
-    html+=`<tr><td><strong>${t.symbol}</strong></td><td>${t.side==='buy'?'매수':'매도'}</td><td class="mono">${t.entry_price}</td><td class="mono">${t.exit_price||'-'}</td><td class="${pc} mono">${pnl}</td><td style="font-size:11px">${t.exit_reason||'-'}</td><td style="font-size:11px">${lesson}</td><td>${sb}</td></tr>`; }); panel.innerHTML=html+'</table>'; }
+    html+=`<tr><td><strong>${t.symbol}</strong></td><td>${t.side==='buy'?'매수':'매도'}</td><td class="mono" style="font-size:11px">${t.entry_date||'-'}</td><td class="mono">${t.entry_price}</td><td class="mono" style="font-size:11px">${t.exit_date||'-'}</td><td class="mono">${t.exit_price||'-'}</td><td class="${pc} mono">${pnl}</td><td style="font-size:11px">${t.exit_reason||'-'}</td><td style="font-size:11px">${lesson}</td><td>${sb}</td></tr>`; }); panel.innerHTML=html+'</table>'; }
 
 // Analysis
 async function loadAnalysis() { const panel=document.getElementById('analysisPanel'); panel.innerHTML='<div class="loading"><span class="spinner"></span></div>'; const r=await fetch(API+'/api/trades/analyze'); const d=await r.json(); const s=d.stats||{}, p=d.patterns||{};
@@ -1066,6 +1125,158 @@ async function loadDaemon() {
 async function loadAll() { checkMaintenance(); checkAuth(); loadSummary(); loadPositions(); loadDaemon(); setTimeout(loadSignals, 500); }
 loadAll();
 setInterval(loadAll, 60000);
+
+// ========== 이력DB 탭 ==========
+function getHistDate() { return document.getElementById('histDate')?.value || new Date().toISOString().slice(0,10); }
+
+async function loadHistory() {
+  const d = getHistDate();
+  loadHistStats(d);
+  loadHistTrades('all');
+  loadHistScreener();
+  loadHistCycles();
+  loadHistErrors();
+}
+
+async function loadHistStats(date) {
+  const el = document.getElementById('histStats');
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> 로딩...</div>';
+  try {
+    const r = await fetch(`${API}/api/db/stats?date=${date||getHistDate()}`);
+    const d = await r.json();
+    if (d.error) { el.innerHTML = `<div class="loading">${d.error}</div>`; return; }
+    const t = d.trades, s = d.screener, dm = d.daemon;
+    const pnlCls = t.total_pnl >= 0 ? 'positive' : 'negative';
+    el.innerHTML = `
+      <div class="summary-grid">
+        <div class="summary-item"><div class="summary-label">거래</div><div class="summary-value">${t.total}건</div><div class="summary-sub">보유 ${t.open} / 청산 ${t.closed}</div></div>
+        <div class="summary-item"><div class="summary-label">승률</div><div class="summary-value">${t.win_rate}%</div><div class="summary-sub">${t.wins}승 ${t.losses}패</div></div>
+        <div class="summary-item"><div class="summary-label">수익</div><div class="summary-value ${pnlCls}">${t.total_pnl >= 0 ? '+' : ''}${t.total_pnl}%</div><div class="summary-sub">평균 ${t.avg_pnl}%</div></div>
+        <div class="summary-item"><div class="summary-label">스크리닝</div><div class="summary-value">${s.runs}회</div><div class="summary-sub">${s.scanned}종목 / 매수신호 ${s.buy_signals}</div></div>
+      </div>
+      <div class="summary-grid" style="margin-top:8px">
+        <div class="summary-item"><div class="summary-label">데몬 사이클</div><div class="summary-value">${dm.cycles}회</div></div>
+        <div class="summary-item"><div class="summary-label">에러</div><div class="summary-value ${d.errors > 0 ? 'negative' : ''}">${d.errors}건</div></div>
+        <div class="summary-item"><div class="summary-label">날짜</div><div class="summary-value" style="font-size:16px">${d.date}</div></div>
+      </div>`;
+  } catch(e) { el.innerHTML = `<div class="loading">오류: ${e.message}</div>`; }
+}
+
+async function loadHistTrades(status) {
+  const el = document.getElementById('histTrades');
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> 로딩...</div>';
+  try {
+    const d = getHistDate();
+    const r = await fetch(`${API}/api/db/trades?date=${d}&status=${status||'all'}&limit=50`);
+    const trades = await r.json();
+    if (!trades.length) { el.innerHTML = '<div class="loading">거래 기록 없음</div>'; return; }
+    let html = `<table><thead><tr><th>종목</th><th>방향</th><th>진입일</th><th>수량</th><th>진입가</th><th>등급</th><th>청산일</th><th>청산가</th><th>손익</th><th>사유</th><th>교훈</th></tr></thead><tbody>`;
+    for (const t of trades) {
+      const pnl = t.pnl_pct != null ? t.pnl_pct : '';
+      const pnlCls = pnl >= 0 ? 'positive' : 'negative';
+      const statusBadge = t.status === 'open' ? '<span class="badge badge-blue">보유</span>' :
+                          pnl >= 0 ? '<span class="badge badge-green">익절</span>' : '<span class="badge badge-red">손절</span>';
+      const entryDt = t.entry_date ? `${t.entry_date} <span style="color:var(--text2)">${t.entry_time||''}</span>` : '-';
+      const exitDt = t.exit_date ? `${t.exit_date} <span style="color:var(--text2)">${t.exit_time||''}</span>` : '-';
+      html += `<tr>
+        <td><strong>${t.symbol}</strong> ${statusBadge}</td>
+        <td>${t.side}</td>
+        <td class="mono" style="font-size:11px">${entryDt}</td>
+        <td class="mono">${t.quantity}</td>
+        <td class="mono">${fmt(t.entry_price)}</td>
+        <td><span class="badge badge-${t.entry_grade==='A'?'green':t.entry_grade==='B'?'blue':'yellow'}">${t.entry_grade||'-'}</span></td>
+        <td class="mono" style="font-size:11px">${exitDt}</td>
+        <td class="mono">${t.exit_price != null ? fmt(t.exit_price) : '-'}</td>
+        <td class="mono ${pnlCls}">${pnl !== '' ? (pnl>=0?'+':'') + pnl + '%' : '-'}</td>
+        <td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.exit_reason||''}">${t.exit_reason||'-'}</td>
+        <td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.lesson||''}">${t.lesson||'-'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="loading">오류: ${e.message}</div>`; }
+}
+
+async function loadHistScreener() {
+  const el = document.getElementById('histScreener');
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> 로딩...</div>';
+  try {
+    const d = getHistDate();
+    const r = await fetch(`${API}/api/db/screener?date=${d}&limit=100`);
+    const rows = await r.json();
+    if (!rows.length) { el.innerHTML = '<div class="loading">스크리닝 기록 없음</div>'; return; }
+    let html = `<table><thead><tr><th>시간</th><th>종목</th><th>등급</th><th>점수</th><th>현재가</th><th>소스</th><th>거래량급증</th><th>갭%</th></tr></thead><tbody>`;
+    for (const s of rows) {
+      const gCls = s.grade==='A'?'green':s.grade==='B'?'blue':s.grade==='C'?'yellow':'red';
+      const time = s.run_at ? s.run_at.split('T')[1]?.slice(0,5) || '' : '';
+      html += `<tr>
+        <td class="mono">${time}</td>
+        <td><strong>${s.symbol}</strong> <span style="color:var(--text2);font-size:11px">${s.name||''}</span></td>
+        <td><span class="badge badge-${gCls}">${s.grade||'-'}</span></td>
+        <td class="mono">${s.score?.toFixed(0)||0}</td>
+        <td class="mono">${fmt(s.current_price)}</td>
+        <td style="font-size:11px">${s.source||'-'}</td>
+        <td class="mono">${s.vol_spike != null ? s.vol_spike + 'x' : '-'}</td>
+        <td class="mono">${s.gap_pct != null ? s.gap_pct + '%' : '-'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="loading">오류: ${e.message}</div>`; }
+}
+
+async function loadHistCycles() {
+  const el = document.getElementById('histCycles');
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> 로딩...</div>';
+  try {
+    const d = getHistDate();
+    const r = await fetch(`${API}/api/db/cycles?date=${d}&limit=100`);
+    const rows = await r.json();
+    if (!rows.length) { el.innerHTML = '<div class="loading">사이클 기록 없음</div>'; return; }
+    let html = `<table><thead><tr><th>#</th><th>시간</th><th>시장</th><th>상태</th><th>포지션</th><th>매도</th><th>매수시도</th><th>매수체결</th><th>당일손익</th><th>소요시간</th></tr></thead><tbody>`;
+    for (const c of rows) {
+      const time = c.created_at?.split(' ')[1]?.slice(0,5) || '';
+      const stCls = c.status==='ok'?'green':c.status==='error'?'red':'yellow';
+      const pnlCls = c.today_pnl >= 0 ? 'positive' : 'negative';
+      html += `<tr>
+        <td class="mono">${c.cycle_num}</td>
+        <td class="mono">${time}</td>
+        <td>${c.market?.toUpperCase()||'-'}</td>
+        <td><span class="badge badge-${stCls}">${c.status}</span></td>
+        <td class="mono">${c.positions_count}</td>
+        <td class="mono">${c.sells_executed}</td>
+        <td class="mono">${c.buys_attempted}</td>
+        <td class="mono">${c.buys_filled}</td>
+        <td class="mono ${pnlCls}">${c.today_pnl>=0?'+':''}${c.today_pnl?.toFixed(2)||0}%</td>
+        <td class="mono">${c.duration_sec?.toFixed(1)||0}s</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="loading">오류: ${e.message}</div>`; }
+}
+
+async function loadHistErrors() {
+  const el = document.getElementById('histErrors');
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> 로딩...</div>';
+  try {
+    const d = getHistDate();
+    const r = await fetch(`${API}/api/db/errors?date=${d}&limit=50`);
+    const rows = await r.json();
+    if (!rows.length) { el.innerHTML = '<div class="loading">에러 없음</div>'; return; }
+    let html = `<table><thead><tr><th>시간</th><th>소스</th><th>메시지</th></tr></thead><tbody>`;
+    for (const e of rows) {
+      const time = e.created_at?.split(' ')[1]?.slice(0,8) || '';
+      html += `<tr>
+        <td class="mono">${time}</td>
+        <td><span class="badge badge-red">${e.source||'unknown'}</span></td>
+        <td style="font-size:12px;max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.message}">${e.message}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = `<div class="loading">오류: ${e.message}</div>`; }
+}
 </script>
 </body>
 </html>

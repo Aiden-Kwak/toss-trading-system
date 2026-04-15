@@ -14,6 +14,16 @@ import sys
 import urllib.parse
 from pathlib import Path
 
+# DB 모듈
+try:
+    sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+    from db import (init_db, query_trades as db_trades, query_screener as db_screener,
+                    query_cycles as db_cycles, query_errors as db_errors, daily_stats as db_stats)
+    init_db()
+    _DB_OK = True
+except Exception:
+    _DB_OK = False
+
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8777
 DASHBOARD_DIR = Path(__file__).parent
 REPO_DIR = DASHBOARD_DIR.parent
@@ -454,6 +464,43 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 capture_output=True, text=True, timeout=5
             )
             self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+
+        # --- DB API ---
+        elif path == "/api/db/trades":
+            if _DB_OK:
+                self._json_response(db_trades(
+                    symbol=params.get("symbol"), date_str=params.get("date"),
+                    status=params.get("status", "all"), limit=int(params.get("limit", "100"))))
+            else:
+                self._json_response({"error": "DB not available"})
+
+        elif path == "/api/db/screener":
+            if _DB_OK:
+                self._json_response(db_screener(
+                    symbol=params.get("symbol"), date_str=params.get("date"),
+                    grade=params.get("grade"), limit=int(params.get("limit", "100"))))
+            else:
+                self._json_response({"error": "DB not available"})
+
+        elif path == "/api/db/cycles":
+            if _DB_OK:
+                self._json_response(db_cycles(
+                    date_str=params.get("date"), limit=int(params.get("limit", "100"))))
+            else:
+                self._json_response({"error": "DB not available"})
+
+        elif path == "/api/db/errors":
+            if _DB_OK:
+                self._json_response(db_errors(
+                    date_str=params.get("date"), limit=int(params.get("limit", "100"))))
+            else:
+                self._json_response({"error": "DB not available"})
+
+        elif path == "/api/db/stats":
+            if _DB_OK:
+                self._json_response(db_stats(params.get("date")))
+            else:
+                self._json_response({"error": "DB not available"})
 
         elif path == "/api/trades/config":
             config_file = Path.home() / "Library/Application Support/tossctl/signal-config.json"
