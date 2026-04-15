@@ -304,11 +304,12 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
     v3: 기술적 지표(RSI/볼린저/EMA/거래량비율) 통합.
 
     평가 항목:
-    - 방향성 시그널 (0-25점): 알파들이 같은 방향을 가리키는가
-    - 모멘텀 품질 (0-20점): 등락률 + RSI 과매도/과매수
+    - 방향성 시그널 (0-20점): 알파들이 같은 방향을 가리키는가
+    - 모멘텀 품질 (0-15점): 등락률 + RSI 과매도/과매수
     - 가격 액션 (0-15점): 캔들 형태 + 볼린저 위치
-    - 시장 컨텍스트 (0-20점): 시장 상황 + EMA 추세 + 추세 필터
-    - 기술적 확인 (0-20점): RSI/EMA/볼린저/거래량 복합 시그널
+    - 거래량 품질 (0-20점): 거래량 급증 + 가격-거래량 동조 + 추세
+    - 시장 컨텍스트 (0-15점): 시장 상황 + EMA 추세 + 추세 필터
+    - 기술적 확인 (0-15점): RSI/EMA/볼린저 복합 시그널
 
     tech: technical-indicators.py의 analyze_symbol() 결과 (선택)
     여력은 점수가 아닌 gate check (리스크 게이트에서 처리)
@@ -345,19 +346,25 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
     breakdown = {}
     total_score = 0
 
-    # ─── 1. 방향성 시그널 (0-25점) ───
+    # 거래량 데이터 추출 (스크리너에서 전달)
+    vol_spike = quote.get("_vol_spike", None)       # 20일 평균 대비 배수
+    vol_spike_5d = quote.get("_vol_spike_5d", None) # 5일 평균 대비 배수
+    vol_trend = quote.get("_vol_trend", None)        # 5일avg / 20일avg (거래량 추세)
+    vol_price_confirm = quote.get("_vol_price_confirm", False)
+
+    # ─── 1. 방향성 시그널 (0-20점) ───
     bullish_count = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v > 0.05)
     bearish_count = sum(1 for v in [a101, a33, a54 - 0.5, momentum_val * 10] if v < -0.05)
 
-    if bullish_count >= 4: direction_score = 25
-    elif bullish_count >= 3: direction_score = 18
-    elif bullish_count >= 2: direction_score = 10
+    if bullish_count >= 4: direction_score = 20
+    elif bullish_count >= 3: direction_score = 15
+    elif bullish_count >= 2: direction_score = 8
     elif bearish_count >= 3: direction_score = 0
     else: direction_score = 3
-    breakdown["direction"] = {"score": direction_score, "max": 25, "bullish": bullish_count, "bearish": bearish_count}
+    breakdown["direction"] = {"score": direction_score, "max": 20, "bullish": bullish_count, "bearish": bearish_count}
     total_score += direction_score
 
-    # ─── 2. 모멘텀 + RSI (0-20점) ───
+    # ─── 2. 모멘텀 + RSI (0-15점) ───
     abs_change = abs(change_rate)
     if is_kr:
         sweet_spot = 0.02 <= abs_change <= 0.08
@@ -366,8 +373,8 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
         sweet_spot = 0.015 <= abs_change <= 0.05
         too_hot = abs_change > 0.10
 
-    if change_rate > 0 and sweet_spot: mom_quality = 15
-    elif change_rate > 0 and not too_hot: mom_quality = 10
+    if change_rate > 0 and sweet_spot: mom_quality = 12
+    elif change_rate > 0 and not too_hot: mom_quality = 8
     elif too_hot: mom_quality = 0
     elif abs_change < 0.005: mom_quality = 0
     elif change_rate < 0 and abs_change < 0.03: mom_quality = 3
@@ -376,12 +383,12 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
     # RSI 보정: 과매도면 가점, 과매수면 감점
     rsi_adj = 0
     if rsi is not None:
-        if rsi <= 30: rsi_adj = 5   # 과매도 → 반등 기회
-        elif rsi <= 40: rsi_adj = 2
-        elif rsi >= 70: rsi_adj = -5  # 과매수 → 진입 위험
-        elif rsi >= 60: rsi_adj = -2
-    mom_quality = max(0, min(20, mom_quality + rsi_adj))
-    breakdown["momentum"] = {"score": mom_quality, "max": 20, "change_rate": round(change_rate * 100, 2), "rsi": rsi, "rsi_adj": rsi_adj}
+        if rsi <= 30: rsi_adj = 3   # 과매도 → 반등 기회
+        elif rsi <= 40: rsi_adj = 1
+        elif rsi >= 70: rsi_adj = -3  # 과매수 → 진입 위험
+        elif rsi >= 60: rsi_adj = -1
+    mom_quality = max(0, min(15, mom_quality + rsi_adj))
+    breakdown["momentum"] = {"score": mom_quality, "max": 15, "change_rate": round(change_rate * 100, 2), "rsi": rsi, "rsi_adj": rsi_adj}
     total_score += mom_quality
 
     # ─── 3. 가격 액션 + 볼린저 (0-15점) ───
@@ -402,12 +409,57 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
     breakdown["price_action"] = {"score": action_score, "max": 15, "alpha101": round(a101, 3), "bb_pctb": bb_pctb, "bb_adj": bb_adj}
     total_score += action_score
 
-    # ─── 4. 시장 컨텍스트 + EMA (0-20점) ───
+    # ─── 4. 거래량 품질 (0-20점) ───
+    vol_score = 0
+    vol_details = {}
+
+    if vol_spike is not None:
+        # 4a. 거래량 급증 강도 (0-10점)
+        if vol_spike >= 3.0: vol_score += 10     # 3배 이상 = 폭발적
+        elif vol_spike >= 2.0: vol_score += 8    # 2배 = 강한 관심
+        elif vol_spike >= 1.5: vol_score += 5    # 1.5배 = 주목할 만한
+        elif vol_spike >= 1.2: vol_score += 2    # 약간 높음
+        else: vol_score += 0                      # 평소 수준
+
+        # 4b. 가격-거래량 동조 (0-5점)
+        # 상승 + 거래량 증가 = 건강한 상승 / 하락 + 거래량 증가 = 투매
+        if change_rate > 0 and vol_spike >= 1.3:
+            vol_score += 5   # 상승 + 거래량↑ = 강한 매수세
+        elif change_rate > 0 and vol_spike < 0.8:
+            vol_score -= 2   # 상승 + 거래량↓ = 허약한 상승
+        elif change_rate < -0.02 and vol_spike >= 2.0:
+            vol_score -= 3   # 하락 + 거래량 폭증 = 투매 (위험)
+
+        # 4c. 거래량 추세 (0-5점)
+        if vol_trend is not None:
+            if vol_trend >= 1.5: vol_score += 5   # 5일 평균이 20일보다 50%↑
+            elif vol_trend >= 1.2: vol_score += 3  # 관심 증가 추세
+            elif vol_trend <= 0.7: vol_score -= 2  # 관심 감소 추세
+
+        vol_details = {
+            "vol_spike_20d": vol_spike,
+            "vol_spike_5d": vol_spike_5d,
+            "vol_trend": vol_trend,
+            "vol_price_confirm": vol_price_confirm,
+        }
+    elif vol_ratio is not None:
+        # tech indicators에서 vol_ratio만 있는 경우 (워치리스트 등)
+        if vol_ratio >= 3.0: vol_score += 10
+        elif vol_ratio >= 2.0: vol_score += 7
+        elif vol_ratio >= 1.5: vol_score += 4
+        elif vol_ratio >= 1.2: vol_score += 2
+        vol_details = {"vol_ratio": vol_ratio}
+
+    vol_score = max(0, min(20, vol_score))
+    breakdown["volume"] = {"score": vol_score, "max": 20, **vol_details}
+    total_score += vol_score
+
+    # ─── 5. 시장 컨텍스트 + EMA (0-15점) ───
     regime = detect_market_regime(quote)
     trend_warning = None
 
-    if regime == "bull": context_score = 15
-    elif regime == "range": context_score = 8
+    if regime == "bull": context_score = 10
+    elif regime == "range": context_score = 5
     elif regime == "bear": context_score = 0
     else: context_score = 0  # crisis
 
@@ -420,13 +472,13 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
     # 추세 필터
     if momentum_val < -0.02 and mean_rev_val > 0.01:
         trend_warning = "하락추세 내 반등 매수 주의 (falling knife)"
-        context_score = max(0, context_score - 8)
+        context_score = max(0, context_score - 5)
 
-    context_score = max(0, min(20, context_score + ema_adj))
-    breakdown["context"] = {"score": context_score, "max": 20, "regime": regime, "ema_cross": "golden" if ema_adj > 0 else "death" if ema_adj < 0 else "none", "trend_warning": trend_warning}
+    context_score = max(0, min(15, context_score + ema_adj))
+    breakdown["context"] = {"score": context_score, "max": 15, "regime": regime, "ema_cross": "golden" if ema_adj > 0 else "death" if ema_adj < 0 else "none", "trend_warning": trend_warning}
     total_score += context_score
 
-    # ─── 5. 기술적 확인 (0-20점) — tech 데이터 있을 때만 ───
+    # ─── 6. 기술적 확인 (0-15점) — tech 데이터 있을 때만 ───
     tech_score = 0
     if tech:
         # RSI 과매도 + EMA 골든크로스 + 볼린저 하단 = 강한 매수 시그널
@@ -434,12 +486,10 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
         if rsi is not None and rsi <= 35: signals += 1
         if ema9 is not None and ema21 is not None and ema9 > ema21: signals += 1
         if bb_pctb is not None and bb_pctb <= 0.3: signals += 1
-        if vol_ratio is not None and vol_ratio >= 1.5: signals += 1
 
-        if signals >= 4: tech_score = 20  # 모든 기술적 지표 동의
-        elif signals >= 3: tech_score = 15
-        elif signals >= 2: tech_score = 8
-        elif signals >= 1: tech_score = 3
+        if signals >= 3: tech_score = 15  # 모든 기술적 지표 동의
+        elif signals >= 2: tech_score = 10
+        elif signals >= 1: tech_score = 4
         else: tech_score = 0
 
         # 역방향 시그널: RSI 과매수 + 데드크로스 = 강한 패널티
@@ -449,7 +499,7 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
         if bb_pctb is not None and bb_pctb >= 0.9: anti_signals += 1
         if anti_signals >= 2: tech_score = 0  # 역방향 → 0점
 
-    breakdown["technical"] = {"score": tech_score, "max": 20, "available": tech is not None}
+    breakdown["technical"] = {"score": tech_score, "max": 15, "available": tech is not None}
     total_score += tech_score
 
     # ─── 등급 산정 (100점 만점) ───

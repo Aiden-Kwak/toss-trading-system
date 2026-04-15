@@ -156,20 +156,33 @@ def screen_auto(market: str = "us", top_n: int = 20) -> list:
 
     def _check_symbol(sym):
         try:
-            hist = yf.Ticker(sym).history(period="5d")
-            if len(hist) < 2:
+            hist = yf.Ticker(sym).history(period="1mo")
+            if len(hist) < 5:
                 return None
 
             today = hist.iloc[-1]
             yesterday = hist.iloc[-2]
-            avg_vol_5d = hist["Volume"].mean()
 
-            vol_spike = today["Volume"] / avg_vol_5d if avg_vol_5d > 0 else 1
+            # 거래량 분석: 20일 평균 기반 (더 안정적인 베이스라인)
+            avg_vol_20d = hist["Volume"].tail(20).mean() if len(hist) >= 20 else hist["Volume"].mean()
+            avg_vol_5d = hist["Volume"].tail(5).mean()
+            today_vol = today["Volume"]
+
+            vol_spike_20d = today_vol / avg_vol_20d if avg_vol_20d > 0 else 1
+            vol_spike_5d = today_vol / avg_vol_5d if avg_vol_5d > 0 else 1
+
+            # 거래량 추세: 최근 5일 평균이 20일 평균보다 높은지 (거래량 증가 추세)
+            vol_trend = avg_vol_5d / avg_vol_20d if avg_vol_20d > 0 else 1
+
             gap_pct = (today["Open"] - yesterday["Close"]) / yesterday["Close"] if yesterday["Close"] > 0 else 0
             change_pct = (today["Close"] - yesterday["Close"]) / yesterday["Close"] if yesterday["Close"] > 0 else 0
 
+            # 거래량-가격 동조: 상승 + 거래량 급증 = 강한 시그널
+            vol_price_confirm = (change_pct > 0 and vol_spike_20d >= 1.3)
+
             is_interesting = (
-                vol_spike >= 1.5 or
+                vol_spike_20d >= 1.5 or          # 20일 평균 대비 1.5배
+                vol_price_confirm or              # 상승 + 거래량 증가
                 gap_pct >= 0.02 or
                 gap_pct <= -0.03 or
                 abs(change_pct) >= 0.03
@@ -185,11 +198,15 @@ def screen_auto(market: str = "us", top_n: int = 20) -> list:
                     "open": round(today["Open"], 2),
                     "high": round(today["High"], 2),
                     "low": round(today["Low"], 2),
-                    "volume": int(today["Volume"]),
+                    "volume": int(today_vol),
+                    "avg_volume_20d": int(avg_vol_20d),
                     "change_rate": round(change_pct, 4),
                     "market_code": "KSP" if ".KS" in sym else ("KSQ" if ".KQ" in sym else "NSQ"),
                     "_source": "auto",
-                    "_vol_spike": round(vol_spike, 2),
+                    "_vol_spike": round(vol_spike_20d, 2),
+                    "_vol_spike_5d": round(vol_spike_5d, 2),
+                    "_vol_trend": round(vol_trend, 2),
+                    "_vol_price_confirm": vol_price_confirm,
                     "_gap_pct": round(gap_pct * 100, 2),
                 }
             return None
@@ -269,7 +286,11 @@ def evaluate_candidates(candidates: list, portfolio: dict = None) -> list:
                 ev = json.loads(result.stdout)
                 ev["_source"] = c.get("_source", "unknown")
                 ev["_vol_spike"] = c.get("_vol_spike", None)
+                ev["_vol_spike_5d"] = c.get("_vol_spike_5d", None)
+                ev["_vol_trend"] = c.get("_vol_trend", None)
+                ev["_vol_price_confirm"] = c.get("_vol_price_confirm", False)
                 ev["_gap_pct"] = c.get("_gap_pct", None)
+                ev["avg_volume_20d"] = c.get("avg_volume_20d", None)
                 scored.append(ev)
         except Exception:
             continue
