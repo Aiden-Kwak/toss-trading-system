@@ -33,6 +33,15 @@ import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
+try:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from db import init_db, insert_screener_run
+    init_db()
+    _DB_OK = True
+except Exception:
+    _DB_OK = False
+
 WATCHLIST_FILE = Path.home() / "Library/Application Support/tossctl/watchlist.json"
 SCRIPTS_DIR = Path(__file__).parent
 
@@ -394,6 +403,11 @@ def main():
 
     if command == "scan":
         result = scan(args)
+        if _DB_OK:
+            try:
+                insert_screener_run(result)
+            except Exception:
+                pass
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     elif command == "watchlist-add":

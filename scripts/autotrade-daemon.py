@@ -20,6 +20,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from enum import Enum
 
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from db import init_db, insert_cycle, insert_error as _db_insert_error
+    init_db()
+    _DB_OK = True
+except Exception:
+    _DB_OK = False
+    def insert_cycle(_): return None
+    def _db_insert_error(*_a, **_k): return None
+
 # ─── 경로 ───
 HOME = Path.home()
 SCRIPTS_DIR = Path(__file__).parent
@@ -106,6 +116,10 @@ class DaemonState:
         self.errors.append(entry)
         self.last_error = msg
         log(f"  ERROR: {msg}")
+        try:
+            _db_insert_error("daemon", msg)
+        except Exception:
+            pass
 
 
 # ─── 유틸리티 ───
@@ -668,6 +682,11 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
     state.cycle_count += 1
     state.last_cycle_at = datetime.now().isoformat()
     protected = load_protected()
+    _cycle_start = time.time()
+    _cycle_sells = 0
+    _cycle_buys_attempted = 0
+    _cycle_buys_filled = 0
+    effective_market = market  # 기본값; auto 모드에서 실제 시장으로 덮어씀
 
     log(f"═══ 사이클 #{state.cycle_count} ═══")
 
@@ -845,6 +864,27 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             log(f"  {bought}종목 매수 완료 (포지션: {len(current_positions)}/{max_pos})")
 
     state.status = DaemonStatus.RUNNING
+
+    # 사이클 DB 기록
+    try:
+        positions_now = run_tossctl("portfolio", "positions")
+        pos_count = len([p for p in (positions_now or [])
+                         if p.get("quantity", 0) > 0]) if isinstance(positions_now, list) else 0
+        insert_cycle({
+            "cycle_num":          state.cycle_count,
+            "market":             effective_market,
+            "status":             "ok",
+            "positions_count":    pos_count,
+            "sells_executed":     _cycle_sells,
+            "buys_attempted":     _cycle_buys_attempted,
+            "buys_filled":        _cycle_buys_filled,
+            "today_pnl":          state.today_pnl,
+            "today_trades":       state.today_trades,
+            "consecutive_losses": state.consecutive_losses,
+            "duration_sec":       round(time.time() - _cycle_start, 1),
+        })
+    except Exception:
+        pass
 
     # 매 20사이클마다 자동 학습 실행
     if state.cycle_count % 20 == 0 and state.cycle_count > 0:

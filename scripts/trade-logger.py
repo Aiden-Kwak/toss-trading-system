@@ -31,6 +31,16 @@ from pathlib import Path
 LOG_FILE = Path.home() / "Library/Application Support/tossctl/trade-log.json"
 CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/signal-config.json"
 
+# DB 연동 (없으면 JSON 단독)
+try:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from db import init_db, insert_trade, close_trade_db, update_lesson_db
+    init_db()
+    _DB_OK = True
+except Exception:
+    _DB_OK = False
+
 
 def load_log() -> list:
     if LOG_FILE.exists():
@@ -76,6 +86,11 @@ def log_trade(args: dict):
 
     trades.append(trade)
     save_log(trades)
+    if _DB_OK:
+        try:
+            insert_trade(trade)
+        except Exception:
+            pass
     print(json.dumps(trade, ensure_ascii=False, indent=2))
 
 
@@ -120,6 +135,13 @@ def close_trade(args: dict):
         target["tags"].append("target_hit")
 
     save_log(trades)
+    if _DB_OK:
+        try:
+            close_trade_db(symbol, exit_price, exit_reason,
+                           pnl_pct=target.get("pnl_pct"),
+                           pnl_amount=target.get("pnl_amount"))
+        except Exception:
+            pass
     print(json.dumps(target, ensure_ascii=False, indent=2))
 
 
@@ -155,6 +177,11 @@ def add_lesson(args: dict):
             target["tags"].append(tag)
 
     save_log(trades)
+    if _DB_OK:
+        try:
+            update_lesson_db(symbol, lesson, score)
+        except Exception:
+            pass
     print(json.dumps(target, ensure_ascii=False, indent=2))
 
 
