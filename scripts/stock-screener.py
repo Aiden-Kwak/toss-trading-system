@@ -44,6 +44,8 @@ except Exception:
 
 WATCHLIST_FILE = Path.home() / "Library/Application Support/tossctl/watchlist.json"
 SCRIPTS_DIR = Path(__file__).parent
+_VENV_PY = SCRIPTS_DIR.parent / ".venv" / "bin" / "python3"
+PYTHON = str(_VENV_PY) if _VENV_PY.exists() else "python3"
 
 try:
     import yfinance as yf
@@ -178,7 +180,7 @@ def screen_auto(market: str = "us", top_n: int = 20) -> list:
             change_pct = (today["Close"] - yesterday["Close"]) / yesterday["Close"] if yesterday["Close"] > 0 else 0
 
             # 거래량-가격 동조: 상승 + 거래량 급증 = 강한 시그널
-            vol_price_confirm = (change_pct > 0 and vol_spike_20d >= 1.3)
+            vol_price_confirm = bool(change_pct > 0 and vol_spike_20d >= 1.3)
 
             is_interesting = (
                 vol_spike_20d >= 1.5 or          # 20일 평균 대비 1.5배
@@ -276,7 +278,7 @@ def evaluate_candidates(candidates: list, portfolio: dict = None) -> list:
 
         try:
             result = subprocess.run(
-                ["python3", str(SCRIPTS_DIR / "signal-engine.py"), "evaluate-buy",
+                [PYTHON, str(SCRIPTS_DIR / "signal-engine.py"), "evaluate-buy",
                  "--quote", json.dumps(c),
                  "--portfolio", json.dumps(portfolio),
                  "--config", "{}"],

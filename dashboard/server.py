@@ -18,7 +18,8 @@ from pathlib import Path
 try:
     sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
     from db import (init_db, query_trades as db_trades, query_screener as db_screener,
-                    query_cycles as db_cycles, query_errors as db_errors, daily_stats as db_stats)
+                    query_cycles as db_cycles, query_errors as db_errors, daily_stats as db_stats,
+                    get_active_tranche_plans as db_tranche_plans)
     init_db()
     _DB_OK = True
 except Exception:
@@ -91,8 +92,153 @@ def check_maintenance_curl() -> dict | None:
         return None
 
 
+def _load_session_cookies() -> str | None:
+    """session.json에서 쿠키 문자열 로드"""
+    try:
+        sf = Path.home() / "Library/Application Support/tossctl/session.json"
+        if not sf.exists():
+            return None
+        s = json.loads(sf.read_text())
+        return "; ".join(f"{k}={v}" for k, v in s.get("cookies", {}).items())
+    except Exception:
+        return None
+
+
+def _curl_toss_api(url: str, method: str = "GET", body: str | None = None) -> dict | None:
+    """curl로 토스증권 API 직접 호출"""
+    cookies = _load_session_cookies()
+    if not cookies:
+        return None
+    try:
+        cmd = ["curl", "-s", "-w", "\n---HTTP_STATUS:%{http_code}---",
+               "-b", cookies,
+               "-H", "User-Agent: Mozilla/5.0",
+               "-H", "Accept: application/json"]
+        if method == "POST":
+            cmd.extend(["-X", "POST", "-H", "Content-Type: application/json", "-d", body or "{}"])
+        cmd.append(url)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        output = result.stdout
+        status_marker = output.rfind("\n---HTTP_STATUS:")
+        if status_marker == -1:
+            return None
+        body = output[:status_marker]
+        status_str = output[status_marker:].replace("\n---HTTP_STATUS:", "").replace("---", "").strip()
+        status_code = int(status_str)
+        if status_code == 490:
+            try:
+                data = json.loads(body)
+                err = data.get("error", {})
+                return {
+                    "error": err.get("message", "시스템 점검 중"),
+                    "maintenance": {
+                        "maintenance": True,
+                        "code": err.get("code", "unavailable.agency"),
+                        "message": err.get("message", "시스템 점검 중"),
+                        "from": err.get("data", {}).get("from"),
+                        "until": err.get("data", {}).get("until"),
+                        "daily": err.get("data", {}).get("daily", False),
+                    }
+                }
+            except json.JSONDecodeError:
+                return {"error": "시스템 점검 중 (490)", "maintenance": {"maintenance": True, "message": "시스템 점검 중 (490)"}}
+        if status_code == 403:
+            return {"error": "세션 만료 (403)", "_error": "403"}
+        if 200 <= status_code < 300:
+            return json.loads(body)
+        return None
+    except Exception:
+        return None
+
+
+# tossctl → curl 폴백 매핑: (url, method)
+_TOSSCTL_CURL_MAP = {
+    ("account", "summary"): ("https://wts-cert-api.tossinvest.com/api/v3/my-assets/summaries/markets/all/overview", "GET"),
+    ("account", "list"): ("https://wts-api.tossinvest.com/api/v1/account/list", "GET"),
+    ("portfolio", "positions"): ("https://wts-cert-api.tossinvest.com/api/v2/dashboard/asset/sections/all", "POST"),
+}
+
+
+def _transform_curl_response(args: tuple, data: dict) -> dict | list:
+    """curl 응답을 tossctl 출력 형식으로 변환"""
+    result = data.get("result", data)
+    if args == ("account", "summary"):
+        overview = result.get("overviewByMarket", {})
+        kr = overview.get("kr", {})
+        us = overview.get("us", {})
+        return {
+            "total_asset_amount": result.get("totalAssetAmount", 0),
+            "evaluated_profit_amount": result.get("evaluatedProfitAmount", 0),
+            "profit_rate": result.get("profitRate", 0),
+            "orderable_amount_krw": kr.get("orderableAmount", {}).get("krw", 0),
+            "orderable_amount_usd": us.get("orderableAmount", {}).get("usd", 0),
+            "markets": {
+                m: {
+                    "market": m,
+                    "pending_buy_order_amount": v.get("pendingBuyOrderAmount", 0),
+                    "evaluated_amount": v.get("evaluatedAmount", 0),
+                    "principal_amount": v.get("principalAmount", 0),
+                    "evaluated_profit_amount": v.get("evaluatedProfitAmount", 0),
+                    "profit_rate": v.get("profitRate", 0),
+                    "total_asset_amount": v.get("totalAssetAmount", 0),
+                    "orderable_amount_krw": v.get("orderableAmount", {}).get("krw", 0),
+                    "orderable_amount_usd": v.get("orderableAmount", {}).get("usd", 0),
+                }
+                for m, v in overview.items()
+            },
+        }
+    if args == ("account", "list"):
+        accounts = result.get("accountList", [])
+        return {
+            "accounts": [
+                {
+                    "id": a.get("key"),
+                    "display_name": a.get("displayName"),
+                    "name": a.get("name"),
+                    "type": a.get("type"),
+                    "markets": a.get("markets", []),
+                    "primary": a.get("key") == result.get("primaryKey"),
+                }
+                for a in accounts
+            ],
+            "primary_key": result.get("primaryKey"),
+        }
+    if args == ("portfolio", "positions"):
+        # SORTED_OVERVIEW 섹션에서 포지션 추출
+        positions = []
+        sections = result.get("sections", [])
+        for sec in sections:
+            if sec.get("type") != "SORTED_OVERVIEW":
+                continue
+            for prod in sec.get("data", {}).get("products", []):
+                market_type = prod.get("marketType", "")
+                market = "us" if "US" in market_type else "kr"
+                for item in prod.get("items", []):
+                    sym = item.get("stockSymbol") or item.get("stockName", "")
+                    cur = item.get("currentPrice", {})
+                    buy = item.get("purchasePrice", {})
+                    pnl = item.get("profitLossAmount", {})
+                    pnl_rate = item.get("profitLossRate", {})
+                    positions.append({
+                        "symbol": sym,
+                        "name": item.get("stockName", ""),
+                        "market": market,
+                        "quantity": item.get("quantity", 0),
+                        "current_price": cur.get("krw", 0),
+                        "current_price_usd": cur.get("usd"),
+                        "avg_price": buy.get("krw", 0) if buy else 0,
+                        "avg_price_usd": buy.get("usd") if buy else None,
+                        "pnl_amount": pnl.get("krw", 0) if pnl else 0,
+                        "pnl_rate": pnl_rate.get("krw", 0) if pnl_rate else 0,
+                        "evaluated_amount": item.get("evaluatedAmount", {}).get("krw", 0),
+                    })
+        return positions
+    # 기본: 원본 반환
+    return result
+
+
 def run_tossctl(*args) -> dict:
-    """tossctl 명령 실행 후 JSON 반환. 490 에러 시 점검 정보 포함."""
+    """tossctl 명령 실행 후 JSON 반환. 실패 시 curl 폴백."""
     try:
         result = subprocess.run(
             ["tossctl", *args, "--output", "json"],
@@ -103,11 +249,19 @@ def run_tossctl(*args) -> dict:
         # 점검시간 감지
         maint = detect_maintenance(result.stderr)
         if maint:
-            # curl로 상세 점검 정보 가져오기
             detail = check_maintenance_curl()
             if detail and detail.get("maintenance"):
                 return {"error": detail["message"], "maintenance": detail}
             return {"error": maint["message"], "maintenance": maint}
+        # tossctl 실패 시 curl 폴백 시도
+        args_key = tuple(args[:2])
+        if args_key in _TOSSCTL_CURL_MAP:
+            curl_url, curl_method = _TOSSCTL_CURL_MAP[args_key]
+            curl_result = _curl_toss_api(curl_url, method=curl_method)
+            if curl_result and "error" not in curl_result:
+                return _transform_curl_response(args_key, curl_result)
+            if curl_result and curl_result.get("maintenance"):
+                return curl_result
         return {"error": result.stderr.strip(), "code": result.returncode}
     except json.JSONDecodeError:
         return {"raw": result.stdout.strip()}
@@ -154,7 +308,14 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/api/auth/status":
-            self._json_response(run_tossctl("auth", "status"))
+            tossctl_result = run_tossctl("auth", "status")
+            # tossctl이 valid=false인데 curl은 되는 경우 보정
+            if isinstance(tossctl_result, dict) and tossctl_result.get("valid") is False:
+                curl_check = _curl_toss_api("https://wts-api.tossinvest.com/api/v1/account/list")
+                if curl_check and "error" not in curl_check:
+                    tossctl_result["valid"] = True
+                    tossctl_result["validation_error"] = None
+            self._json_response(tossctl_result)
 
         elif path == "/api/auth/login":
             # 백그라운드에서 auth login 실행 (브라우저 열림)
@@ -499,6 +660,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/db/stats":
             if _DB_OK:
                 self._json_response(db_stats(params.get("date")))
+            else:
+                self._json_response({"error": "DB not available"})
+
+        elif path == "/api/db/tranche-plans":
+            if _DB_OK:
+                symbol = params.get("symbol")
+                self._json_response(db_tranche_plans(symbol))
             else:
                 self._json_response({"error": "DB not available"})
 

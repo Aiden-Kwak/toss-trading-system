@@ -22,6 +22,8 @@ DB 위치: ~/Library/Application Support/tossctl/trading.db
   python3 db.py stats [--date YYYY-MM-DD]
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 import sys
@@ -62,7 +64,33 @@ CREATE TABLE IF NOT EXISTS trades (
     status          TEXT    DEFAULT 'open',
     mode            TEXT    DEFAULT 'manual',
     tags            TEXT    DEFAULT '[]',
+    group_id        TEXT,
+    tranche_seq     INTEGER DEFAULT 1,
     created_at      TEXT    DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS tranche_plans (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id          TEXT    UNIQUE NOT NULL,
+    symbol            TEXT    NOT NULL,
+    market            TEXT    DEFAULT 'US',
+    total_tranches    INTEGER DEFAULT 3,
+    planned_qty       INTEGER DEFAULT 0,
+    planned_budget    REAL    DEFAULT 0,
+    entry_price_t1    REAL    DEFAULT 0,
+    ratios            TEXT    DEFAULT '[0.4, 0.35, 0.25]',
+    tranches_filled   INTEGER DEFAULT 1,
+    next_tranche      INTEGER DEFAULT 2,
+    next_condition    TEXT    DEFAULT 'dip_buy',
+    next_target_price REAL    DEFAULT 0,
+    cycles_waited     INTEGER DEFAULT 0,
+    max_wait_cycles   INTEGER DEFAULT 12,
+    status            TEXT    DEFAULT 'active',
+    grade             TEXT    DEFAULT '',
+    score             REAL    DEFAULT 0,
+    entry_reason      TEXT    DEFAULT '',
+    created_at        TEXT    DEFAULT (datetime('now', 'localtime')),
+    updated_at        TEXT    DEFAULT (datetime('now', 'localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS screener_runs (
@@ -121,6 +149,9 @@ CREATE TABLE IF NOT EXISTS errors (
 CREATE INDEX IF NOT EXISTS idx_trades_symbol    ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_date      ON trades(entry_date);
 CREATE INDEX IF NOT EXISTS idx_trades_status    ON trades(status);
+CREATE INDEX IF NOT EXISTS idx_trades_group     ON trades(group_id);
+CREATE INDEX IF NOT EXISTS idx_tranche_plans_symbol ON tranche_plans(symbol);
+CREATE INDEX IF NOT EXISTS idx_tranche_plans_status ON tranche_plans(status);
 CREATE INDEX IF NOT EXISTS idx_screener_run     ON screener_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_screener_symbol  ON screener_results(symbol);
 CREATE INDEX IF NOT EXISTS idx_cycles_date      ON daemon_cycles(created_at);
@@ -148,9 +179,24 @@ def get_conn():
 
 
 def init_db():
-    """테이블 생성 (없을 때만)"""
+    """테이블 생성 (없을 때만) + 스키마 마이그레이션"""
     with get_conn() as conn:
+        # 기존 테이블에 신규 컬럼 추가 (SCHEMA 실행 전에 해야 인덱스 생성 성공)
+        _migrate_schema(conn)
         conn.executescript(SCHEMA)
+
+
+def _migrate_schema(conn):
+    """기존 테이블에 신규 컬럼 추가 (없을 때만)"""
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "trades" not in tables:
+        return  # 첫 실행 — SCHEMA가 모든 것을 생성함
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
+    if "group_id" not in existing:
+        conn.execute("ALTER TABLE trades ADD COLUMN group_id TEXT")
+    if "tranche_seq" not in existing:
+        conn.execute("ALTER TABLE trades ADD COLUMN tranche_seq INTEGER DEFAULT 1")
 
 
 # ─── 거래 기록 ───
@@ -167,14 +213,16 @@ def insert_trade(t: dict) -> int:
                entry_grade, entry_score, entry_reason,
                stop_loss, take_profit, status, mode, tags,
                exit_price, exit_date, exit_time, exit_reason,
-               pnl_pct, pnl_amount, lesson, lesson_score)
+               pnl_pct, pnl_amount, lesson, lesson_score,
+               group_id, tranche_seq)
             VALUES
               (:symbol,:name,:side,:market,:quantity,
                :entry_price,:entry_date,:entry_time,
                :entry_grade,:entry_score,:entry_reason,
                :stop_loss,:take_profit,:status,:mode,:tags,
                :exit_price,:exit_date,:exit_time,:exit_reason,
-               :pnl_pct,:pnl_amount,:lesson,:lesson_score)
+               :pnl_pct,:pnl_amount,:lesson,:lesson_score,
+               :group_id,:tranche_seq)
         """, {
             "symbol":       t.get("symbol", ""),
             "name":         t.get("name", ""),
@@ -200,6 +248,8 @@ def insert_trade(t: dict) -> int:
             "pnl_amount":   t.get("pnl_amount"),
             "lesson":       t.get("lesson"),
             "lesson_score": t.get("lesson_score"),
+            "group_id":     t.get("group_id"),
+            "tranche_seq":  t.get("tranche_seq", 1),
         })
         return cur.lastrowid
 
@@ -280,6 +330,153 @@ def query_trades(symbol: str = None, date_str: str = None,
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+
+# ─── 분할매수 트랜치 ───
+
+def create_tranche_plan(plan: dict) -> str:
+    """트랜치 플랜 생성. group_id 반환."""
+    group_id = plan.get("group_id") or f"{plan['symbol']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    ratios = plan.get("ratios", [0.4, 0.35, 0.25])
+    if isinstance(ratios, list):
+        ratios = json.dumps(ratios)
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO tranche_plans
+              (group_id, symbol, market, total_tranches, planned_qty,
+               planned_budget, entry_price_t1, ratios, tranches_filled,
+               next_tranche, next_condition, next_target_price,
+               cycles_waited, max_wait_cycles, status, grade, score,
+               entry_reason)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            group_id,
+            plan.get("symbol", ""),
+            plan.get("market", "US"),
+            plan.get("total_tranches", 3),
+            plan.get("planned_qty", 0),
+            plan.get("planned_budget", 0),
+            plan.get("entry_price_t1", 0),
+            ratios,
+            plan.get("tranches_filled", 1),
+            plan.get("next_tranche", 2),
+            plan.get("next_condition", "dip_buy"),
+            plan.get("next_target_price", 0),
+            plan.get("cycles_waited", 0),
+            plan.get("max_wait_cycles", 12),
+            "active",
+            plan.get("grade", ""),
+            plan.get("score", 0),
+            plan.get("entry_reason", ""),
+        ))
+    return group_id
+
+
+def get_active_tranche_plans(symbol: str = None) -> list:
+    """활성 트랜치 플랜 목록 조회."""
+    with get_conn() as conn:
+        if symbol:
+            rows = conn.execute(
+                "SELECT * FROM tranche_plans WHERE status='active' AND symbol=? ORDER BY id",
+                (symbol.upper(),)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tranche_plans WHERE status='active' ORDER BY id"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_tranche_plan(group_id: str, updates: dict) -> bool:
+    """트랜치 플랜 업데이트 (cycles_waited 증가, next_tranche 변경 등)."""
+    if not updates:
+        return False
+    sets = []
+    params = []
+    for k, v in updates.items():
+        sets.append(f"{k}=?")
+        params.append(v)
+    sets.append("updated_at=datetime('now','localtime')")
+    params.append(group_id)
+    with get_conn() as conn:
+        r = conn.execute(
+            f"UPDATE tranche_plans SET {','.join(sets)} WHERE group_id=?",
+            params
+        )
+        return r.rowcount > 0
+
+
+def complete_tranche_plan(group_id: str, status: str = "completed") -> bool:
+    """트랜치 플랜 종료 (completed, expired, cancelled)."""
+    with get_conn() as conn:
+        r = conn.execute(
+            "UPDATE tranche_plans SET status=?, updated_at=datetime('now','localtime') WHERE group_id=?",
+            (status, group_id)
+        )
+        return r.rowcount > 0
+
+
+def complete_tranche_plan_by_symbol(symbol: str) -> int:
+    """해당 종목의 활성 트랜치 플랜 모두 종료."""
+    with get_conn() as conn:
+        r = conn.execute(
+            "UPDATE tranche_plans SET status='completed', updated_at=datetime('now','localtime') WHERE symbol=? AND status='active'",
+            (symbol.upper(),)
+        )
+        return r.rowcount
+
+
+def close_all_trades_by_symbol(symbol: str, exit_price: float, exit_reason: str,
+                                exit_time: str = None) -> list:
+    """해당 종목의 모든 open 트레이드를 일괄 종료. 종료된 레코드 목록 반환."""
+    now = datetime.now()
+    closed = []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE symbol=? AND status='open' ORDER BY id",
+            (symbol.upper(),)
+        ).fetchall()
+        if not rows:
+            return []
+
+        for row in rows:
+            entry = row["entry_price"]
+            pnl_pct = None
+            pnl_amount = None
+            if entry > 0:
+                cost_rate = 0.002
+                gross = (exit_price - entry) / entry
+                pnl_pct = round((gross - cost_rate) * 100, 2)
+            if entry > 0:
+                pnl_amount = round((exit_price - entry) * row["quantity"], 2)
+
+            tags = json.loads(row["tags"] or "[]")
+            tags.append("win" if (pnl_pct or 0) > 0 else "loss")
+            if exit_reason == "SELL_STOP_LOSS":
+                tags.append("stopped_out")
+            if exit_reason == "SELL_TAKE_PROFIT":
+                tags.append("target_hit")
+
+            conn.execute("""
+                UPDATE trades SET
+                  exit_price=?, exit_date=?, exit_time=?, exit_reason=?,
+                  pnl_pct=?, pnl_amount=?, status='closed', tags=?
+                WHERE id=?
+            """, (
+                exit_price,
+                now.strftime("%Y-%m-%d"),
+                exit_time or now.strftime("%H:%M:%S"),
+                exit_reason,
+                pnl_pct,
+                pnl_amount,
+                json.dumps(tags, ensure_ascii=False),
+                row["id"],
+            ))
+            closed.append(dict(row) | {
+                "exit_price": exit_price, "pnl_pct": pnl_pct,
+                "status": "closed", "exit_reason": exit_reason,
+            })
+    return closed
 
 
 # ─── 스크리너 기록 ───

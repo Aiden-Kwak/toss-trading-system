@@ -1,6 +1,6 @@
 # toss-trading-system
 
-AI 기반 단타 트레이딩 시스템 — 토스증권 CLI + 시그널 엔진 + 자동매매 데몬
+자동 단타 트레이딩 시스템 — 토스증권 CLI + 시그널 엔진 + 자동매매 데몬
 
 > **비공식 프로젝트입니다.** 토스증권 웹 내부 API를 사용하며, 이용약관 위반 가능성이 있습니다.
 > 모든 거래는 본인의 판단과 책임 하에 이루어집니다.
@@ -14,6 +14,7 @@ flowchart TB
         SCREENER["종목 스크리너\n워치리스트+자동탐색+뉴스"]
         ENGINE["시그널 엔진\n101 Alphas + 채점 + 추세 필터"]
         GATE["리스크 게이트\n손실한도/포지션/여력"]
+        TRANCHE["분할매수\n2~3 트랜치 진입"]
         EXEC["주문 실행\nquick-order.sh\n(병렬 멀티 진입)"]
         LOGGER["거래 기록\ntrade-logger.py"]
     end
@@ -39,7 +40,7 @@ flowchart TB
         API["토스증권 API\n시세/주문/계좌"]
     end
 
-    REGIME --> SCREENER --> ENGINE --> GATE --> EXEC
+    REGIME --> SCREENER --> ENGINE --> GATE --> TRANCHE --> EXEC
     EXEC --> HOOK --> API
     EXEC --> NOTIFY
     API --> LOGGER --> ANALYZER --> KELLY --> SUGGEST --> CONFIG --> ENGINE
@@ -49,7 +50,7 @@ flowchart TB
 
 ## 핵심 컴포넌트
 
-### 자동매매 데몬 (Claude 불필요)
+### 자동매매 데몬
 
 ```bash
 # 시뮬레이션 (주문 안 함)
@@ -71,9 +72,38 @@ caffeinate -i python3 scripts/autotrade-daemon.py --interval 300 &
   5. 연속 손절 ─── 3회 → Discord 알림 → 30분 냉각 → 재개
   6. 포지션 체크 ─ 시그널 알림 → 손절/익절/트레일링 → 자동 매도 → 알림
   7. 리스크 게이트 ─ 미통과 → 매수 스킵
+  7.5 분할매수 ─── 대기 트랜치 조건 평가 → 조건 충족 시 추가 진입
   8. 스크리너 ──── 워치리스트 채점 → A/B만 매수
   9. 멀티 진입 ─── 포지션 한도까지 병렬 매수 → 알림 (주문가능금액 균등 배분)
 ```
+
+### 분할매수 (Scaled Entry)
+
+한 번에 전량 매수 대신 2~3회 트랜치로 나눠 진입하여 평균 단가를 개선합니다.
+
+```
+T1 (40%) ─── 시그널 발생 시 즉시 진입
+T2 (35%) ─── 눌림목 매수(-1.5%) 또는 돌파 확인(+1.0%)
+T3 (25%) ─── 추가 확인 조건 충족 시
+
+매도 시 → 해당 종목의 모든 트랜치 일괄 청산
+```
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `scaled_entry_enabled` | true | 분할매수 활성화 |
+| `scaled_entry_tranches` | 3 | 트랜치 수 |
+| `scaled_entry_ratios` | [0.4, 0.35, 0.25] | 트랜치별 배분 비율 |
+| `tranche2_condition` | dip_buy | T2 조건 (dip_buy/breakout_confirm/time_based) |
+| `tranche2_dip_pct` | -1.5 | 눌림목 매수 기준 (T1 진입가 대비) |
+| `tranche2_max_wait_cycles` | 12 | T2 최대 대기 사이클 |
+| `tranche3_condition` | breakout_confirm | T3 조건 |
+| `tranche3_breakout_pct` | 1.0 | 돌파 확인 기준 (T1 진입가 대비) |
+| `tranche_timeout_action` | cancel | 대기 초과 시 동작 (cancel/execute) |
+
+- 트랜치 빌딩 중인 종목은 손절선 1.5배 확대 (조기 손절 방지)
+- 예약 예산은 데몬 재시작 시에도 유지 (daemon-state.json)
+- 포지션 슬롯은 1개로 카운트, 중복 매수 방지
 
 ### 시그널 엔진 (`signal-engine.py`)
 
@@ -176,7 +206,7 @@ python3 scripts/day-simulator.py --symbols TSLA,NVDA --date 2026-04-10
 보호 종목 주문 시도 → PreToolUse hook → exit 2 차단 (우회 불가)
 ```
 
-- 시스템 레벨 강제 (Claude/데몬 모두 차단)
+- 시스템 레벨 강제 (데몬 포함 모두 차단)
 - `protected-stocks.json`으로 관리
 - 일일 손실 계산에서 보호종목 등락 제외
 
@@ -193,6 +223,7 @@ python3 dashboard/server.py  # → http://localhost:8777
 | **백테스트** | 기간 백테스트 (자동 전략 분기), 포트폴리오 백테스트 (다종목 병렬), 하루 시뮬레이션 |
 | **리스크** | 트레이딩 설정 편집, 게이트, 파라미터 조정 제안, 보호종목 |
 | **기록** | 거래기록 & 교훈, 패턴분석, 보고서 (일일/주간/월간 + PDF 다운로드) |
+| **이력DB** | 일별 통계, 거래 이력 (트랜치 표시), 스크리닝 기록, 데몬 사이클, 분할매수 트랜치 플랜, 에러 로그 |
 
 ### 데몬 제어
 
@@ -326,36 +357,22 @@ tail -f ~/Library/Logs/toss-trading/autotrade-daemon.log
 | `KeepAlive` | 크래시 시 자동 재시작 |
 | `PYTHONUNBUFFERED=1` | 로그 실시간 출력 |
 
-## Claude Code 스킬
-
-| 스킬 | 설명 |
-|------|------|
-| `/toss-login` | QR 로그인, 세션 관리 |
-| `/toss-portfolio` | 계좌/포트폴리오 조회 |
-| `/toss-quote` | 실시간 시세 조회 |
-| `/toss-order` | 매수/매도/취소 (사용자 확인) |
-| `/toss-daytrade` | 분석→발굴→주문→복기 (사용자 확인 모드) |
-| `/toss-autotrade` | 자율 트레이딩 (/loop 연동) |
-| `/toss-protect` | 보호 종목 관리 |
-| `/toss-export` | CSV 내보내기 |
-| `/toss-dashboard` | 대시보드 실행 |
-| `/toss-trading-brain` | 전략 지식 베이스 (전략 논의/파라미터 조정 시 자동 참조) |
-
 ## 리스크 관리
 
-| 규칙 | autotrade-daemon | /toss-daytrade |
-|------|-------------------|----------------|
-| 포지션 사이징 | 주문가능금액 기준 (Kelly 권장) | 주문가능금액 20% |
-| 멀티 진입 | 한도까지 병렬 (균등 배분) | 1종목씩 |
-| 손절선 | -3% | -3% ~ -5% |
-| 익절선 | +7% | +5% ~ +10% |
-| 트레일링 스톱 | +3% 이후 당일 -2% | 없음 |
-| 일일 최대 손실 | -2% (운용금 기준, 보호종목 제외) | -3% |
-| 동시 포지션 | 2종목 (설정 가능) | 3종목 |
-| 연속 손절 냉각 | 3회 → 30분 | 없음 |
-| 시장 상황 보정 | bear -10점, crisis -15점 | 없음 |
-| 추세 필터 | 하락추세 반등 매수 -5점 | 없음 |
-| 세션 만료 시 | 알림 + 매수 중단 | 안내 |
+| 규칙 | 기본값 |
+|------|--------|
+| 포지션 사이징 | 주문가능금액 기준 (Kelly 권장) |
+| 분할매수 | 3 트랜치 (40/35/25%), 눌림목·돌파 조건 |
+| 멀티 진입 | 한도까지 병렬 (균등 배분) |
+| 손절선 | -3% (트랜치 빌딩 중 -4.5%) |
+| 익절선 | +7% |
+| 트레일링 스톱 | +3% 이후 당일 -2% |
+| 일일 최대 손실 | -2% (운용금 기준, 보호종목 제외) |
+| 동시 포지션 | 2종목 (설정 가능) |
+| 연속 손절 냉각 | 3회 → 30분 |
+| 시장 상황 보정 | bear -10점, crisis -15점 |
+| 추세 필터 | 하락추세 반등 매수 -5점 |
+| 세션 만료 시 | 알림 + 매수 중단 |
 
 ## 설치
 
@@ -363,7 +380,6 @@ tail -f ~/Library/Logs/toss-trading/autotrade-daemon.log
 
 - macOS (Apple Silicon / Intel)
 - Go 1.25+ / Python 3.10+ / Google Chrome
-- [Claude Code](https://claude.ai/code) (스킬 사용 시)
 
 ### 원클릭 설치
 
@@ -389,22 +405,18 @@ playwright install chromium
 cd toss-trading-system && python3 -m venv .venv
 source .venv/bin/activate && pip install -r requirements.txt
 
-# 4. 스킬 복사
-cp -r skills/toss-* ~/.claude/skills/
-
-# 5. 환경변수 (.zshrc)
+# 4. 환경변수 (.zshrc)
 export PATH="<path>/tossinvest-cli/bin:$PATH"
 export TOSSCTL_AUTH_HELPER_DIR="<path>/tossinvest-cli/auth-helper"
 export TOSSCTL_AUTH_HELPER_PYTHON="<path>/tossinvest-cli/auth-helper/.venv/bin/python3"
 
-# 6. 로그인
+# 5. 로그인
 tossctl auth login
 ```
 
 ## 참고
 
 - [tossinvest-cli](https://github.com/JungHoonGhae/tossinvest-cli) — 토스증권 비공식 CLI
-- [claude-trading-skills](https://github.com/tradermonty/claude-trading-skills) — Claude Code 트레이딩 분석 스킬 50개
 - [101 Formulaic Alphas](https://arxiv.org/abs/1601.00991) — Kakushadze (2016)
 - [Kelly Criterion](https://www.quantstart.com/articles/Money-Management-via-the-Kelly-Criterion/) — 포지션 사이징
 - [Mean Reversion Strategies](https://www.quantifiedstrategies.com/mean-reversion-strategies/) — 평균회귀 전략

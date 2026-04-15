@@ -35,7 +35,8 @@ CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/signal-config.j
 try:
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent))
-    from db import init_db, insert_trade, close_trade_db, update_lesson_db
+    from db import (init_db, insert_trade, close_trade_db, update_lesson_db,
+                    close_all_trades_by_symbol)
     init_db()
     _DB_OK = True
 except Exception:
@@ -82,6 +83,8 @@ def log_trade(args: dict):
         "status": "open",
         "mode": args.get("mode", "manual"),  # manual / autotrade
         "tags": [],
+        "group_id": args.get("group-id"),
+        "tranche_seq": int(args.get("tranche-seq", "1")),
     }
 
     trades.append(trade)
@@ -143,6 +146,47 @@ def close_trade(args: dict):
         except Exception:
             pass
     print(json.dumps(target, ensure_ascii=False, indent=2))
+
+
+def close_all_trades(args: dict):
+    """심볼의 모든 open 거래 일괄 청산"""
+    trades = load_log()
+    symbol = args.get("symbol", "").upper()
+    exit_price = float(args.get("exit-price", "0"))
+    exit_reason = args.get("exit-reason", "MANUAL")
+
+    closed = []
+    for t in trades:
+        if t["symbol"] == symbol and t["status"] == "open":
+            entry = t["entry_price"]
+            cost_rate = 0.002
+            gross_pnl = (exit_price - entry) / entry if entry > 0 else 0
+            net_pnl = gross_pnl - cost_rate
+
+            t["exit_price"] = exit_price
+            t["exit_date"] = datetime.now().strftime("%Y-%m-%d")
+            t["exit_reason"] = exit_reason
+            t["pnl_pct"] = round(net_pnl * 100, 2)
+            t["pnl_amount"] = round((exit_price - entry) * t["quantity"], 2)
+            t["status"] = "closed"
+
+            if net_pnl > 0:
+                t["tags"].append("win")
+            else:
+                t["tags"].append("loss")
+            if exit_reason == "STOP_LOSS":
+                t["tags"].append("stopped_out")
+            if exit_reason == "TAKE_PROFIT":
+                t["tags"].append("target_hit")
+            closed.append(t)
+
+    save_log(trades)
+    if _DB_OK and closed:
+        try:
+            close_all_trades_by_symbol(symbol, exit_price, exit_reason)
+        except Exception:
+            pass
+    print(json.dumps(closed, ensure_ascii=False, indent=2))
 
 
 def add_lesson(args: dict):
@@ -217,6 +261,8 @@ def main():
         log_trade(args)
     elif command == "close":
         close_trade(args)
+    elif command == "close-all":
+        close_all_trades(args)
     elif command == "lesson":
         add_lesson(args)
     elif command == "list":

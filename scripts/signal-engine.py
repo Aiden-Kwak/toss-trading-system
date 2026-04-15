@@ -105,6 +105,20 @@ def _load_entry_grades() -> dict:
         return {}
 
 
+def _get_tranche_building_symbols() -> set:
+    """활성 트랜치 플랜이 있는(아직 전체 트랜치 미완료) 종목 집합"""
+    try:
+        from pathlib import Path
+        sys_path = str(Path(__file__).parent)
+        if sys_path not in sys.path:
+            sys.path.insert(0, sys_path)
+        from db import get_active_tranche_plans
+        plans = get_active_tranche_plans()
+        return {p["symbol"] for p in plans if p.get("tranches_filled", 0) < p.get("total_tranches", 1)}
+    except Exception:
+        return set()
+
+
 def check_positions(positions: list, config: dict) -> list:
     """보유종목의 손절/익절 시그널을 체크합니다.
 
@@ -116,6 +130,8 @@ def check_positions(positions: list, config: dict) -> list:
 
     # T등급(추세추종) 종목은 넓은 손절 적용
     entry_grades = _load_entry_grades()
+    # 트랜치 빌딩 중인 종목은 손절 1.5배 완화
+    tranche_building = _get_tranche_building_symbols()
 
     signals = []
     for pos in positions:
@@ -132,6 +148,9 @@ def check_positions(positions: list, config: dict) -> list:
         if grade == "T":
             eff_sl = stop_loss * 2   # -3% → -6%
             eff_tp = 9.99            # 사실상 익절 없음
+        elif symbol in tranche_building:
+            eff_sl = stop_loss * 1.5  # 트랜치 빌딩 중: 손절 1.5배 완화
+            eff_tp = take_profit
         else:
             eff_sl = stop_loss
             eff_tp = take_profit

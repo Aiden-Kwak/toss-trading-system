@@ -10,6 +10,8 @@ autotrade-daemon.py — Claude 없이 독립 실행되는 자동매매 데몬
 환경변수 또는 signal-config.json에서 파라미터 로드.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -22,13 +24,21 @@ from enum import Enum
 
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from db import init_db, insert_cycle, insert_error as _db_insert_error
+    from db import (init_db, insert_cycle, insert_error as _db_insert_error,
+                    create_tranche_plan, get_active_tranche_plans,
+                    update_tranche_plan, complete_tranche_plan,
+                    complete_tranche_plan_by_symbol)
     init_db()
     _DB_OK = True
 except Exception:
     _DB_OK = False
     def insert_cycle(_): return None
     def _db_insert_error(*_a, **_k): return None
+    def create_tranche_plan(_): return ""
+    def get_active_tranche_plans(_s=None): return []
+    def update_tranche_plan(_g, _u): return False
+    def complete_tranche_plan(_g, _s="completed"): return False
+    def complete_tranche_plan_by_symbol(_s): return 0
 
 # ─── 경로 ───
 HOME = Path.home()
@@ -78,6 +88,7 @@ class DaemonState:
         self.last_cycle_at = None
         self.started_at = datetime.now().isoformat()
         self.errors = []  # 최근 에러 로그
+        self.reserved_budgets = {}  # {"TSLA": {"usd": 150.0, "krw": 0}, ...}
         self.load()
 
     def load(self):
@@ -93,6 +104,7 @@ class DaemonState:
                     self.today_pnl = d.get("today_pnl", 0)
                     self.today_trades = d.get("today_trades", 0)
                     self.consecutive_losses = d.get("consecutive_losses", 0)
+                self.reserved_budgets = d.get("reserved_budgets", {})
             except Exception:
                 pass
 
@@ -109,6 +121,7 @@ class DaemonState:
             "last_cycle_at": self.last_cycle_at,
             "started_at": self.started_at,
             "errors": self.errors[-10:],
+            "reserved_budgets": self.reserved_budgets,
         }, ensure_ascii=False, indent=2))
 
     def record_error(self, msg: str):
@@ -129,8 +142,116 @@ def log(msg: str):
     print(f"[{ts}] {msg}")
 
 
+def _load_session_cookies() -> str | None:
+    """session.json에서 쿠키 문자열 로드"""
+    try:
+        sf = Path.home() / "Library/Application Support/tossctl/session.json"
+        if not sf.exists():
+            return None
+        s = json.loads(sf.read_text())
+        return "; ".join(f"{k}={v}" for k, v in s.get("cookies", {}).items())
+    except Exception:
+        return None
+
+
+def _curl_toss_api(url: str, method: str = "GET", body: str | None = None) -> dict | None:
+    """curl로 토스증권 API 직접 호출 (tossctl 폴백)"""
+    cookies = _load_session_cookies()
+    if not cookies:
+        return None
+    try:
+        cmd = ["curl", "-s", "-w", "\n---HTTP_STATUS:%{http_code}---",
+               "-b", cookies,
+               "-H", "User-Agent: Mozilla/5.0",
+               "-H", "Accept: application/json"]
+        if method == "POST":
+            cmd.extend(["-X", "POST", "-H", "Content-Type: application/json", "-d", body or "{}"])
+        cmd.append(url)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        output = r.stdout
+        marker = output.rfind("\n---HTTP_STATUS:")
+        if marker == -1:
+            return None
+        raw_body = output[:marker]
+        code = int(output[marker:].replace("\n---HTTP_STATUS:", "").replace("---", "").strip())
+        if code == 490:
+            return {"_error": "maintenance"}
+        if 200 <= code < 300:
+            return json.loads(raw_body)
+        return None
+    except Exception:
+        return None
+
+
+# tossctl → curl 폴백 매핑
+_CURL_FALLBACK = {
+    ("account", "summary"): ("https://wts-cert-api.tossinvest.com/api/v3/my-assets/summaries/markets/all/overview", "GET"),
+    ("account", "list"): ("https://wts-api.tossinvest.com/api/v1/account/list", "GET"),
+    ("portfolio", "positions"): ("https://wts-cert-api.tossinvest.com/api/v2/dashboard/asset/sections/all", "POST"),
+}
+
+
+def _transform_fallback(args_key: tuple, data: dict) -> dict | list | None:
+    """curl 응답 → tossctl 형식 변환"""
+    result = data.get("result", data)
+    if args_key == ("account", "summary"):
+        overview = result.get("overviewByMarket", {})
+        kr = overview.get("kr", {})
+        us = overview.get("us", {})
+        return {
+            "total_asset_amount": result.get("totalAssetAmount", 0),
+            "evaluated_profit_amount": result.get("evaluatedProfitAmount", 0),
+            "profit_rate": result.get("profitRate", 0),
+            "orderable_amount_krw": kr.get("orderableAmount", {}).get("krw", 0),
+            "orderable_amount_usd": us.get("orderableAmount", {}).get("usd", 0),
+            "markets": {
+                m: {
+                    "market": m,
+                    "orderable_amount_krw": v.get("orderableAmount", {}).get("krw", 0),
+                    "orderable_amount_usd": v.get("orderableAmount", {}).get("usd", 0),
+                    "evaluated_amount": v.get("evaluatedAmount", 0),
+                    "principal_amount": v.get("principalAmount", 0),
+                    "evaluated_profit_amount": v.get("evaluatedProfitAmount", 0),
+                    "profit_rate": v.get("profitRate", 0),
+                    "total_asset_amount": v.get("totalAssetAmount", 0),
+                }
+                for m, v in overview.items()
+            },
+        }
+    if args_key == ("portfolio", "positions"):
+        positions = []
+        for sec in result.get("sections", []):
+            if sec.get("type") != "SORTED_OVERVIEW":
+                continue
+            for prod in sec.get("data", {}).get("products", []):
+                mtype = prod.get("marketType", "")
+                mcode = "US" if "US" in mtype else "KR"
+                for item in prod.get("items", []):
+                    sym = item.get("stockSymbol") or item.get("stockName", "")
+                    cur = item.get("currentPrice", {})
+                    buy = item.get("purchasePrice", {})
+                    pnl_amt = item.get("profitLossAmount", {})
+                    pnl_rate = item.get("profitLossRate", {})
+                    positions.append({
+                        "product_code": item.get("stockCode", ""),
+                        "symbol": sym,
+                        "name": item.get("stockName", ""),
+                        "market_type": mtype,
+                        "market_code": mcode,
+                        "quantity": item.get("quantity", 0),
+                        "average_price": (buy or {}).get("krw", 0),
+                        "current_price": (cur or {}).get("krw", 0),
+                        "average_price_usd": (buy or {}).get("usd"),
+                        "current_price_usd": (cur or {}).get("usd"),
+                        "unrealized_pnl": (pnl_amt or {}).get("krw", 0),
+                        "profit_rate": (pnl_rate or {}).get("krw", 0),
+                    })
+        return positions
+    return result
+
+
 def run_tossctl(*args, timeout=15) -> dict | list | None:
-    """tossctl 실행. 실패 시 None 반환."""
+    """tossctl 실행. 실패 시 curl 폴백, 그래도 실패 시 None 반환."""
     try:
         result = subprocess.run(
             [str(TOSS_BIN), *args, "--output", "json"],
@@ -141,6 +262,15 @@ def run_tossctl(*args, timeout=15) -> dict | list | None:
         # 490 = 점검
         if "490" in result.stderr:
             return {"_error": "maintenance", "detail": result.stderr.strip()}
+        # curl 폴백 시도
+        args_key = tuple(args[:2])
+        if args_key in _CURL_FALLBACK:
+            curl_url, curl_method = _CURL_FALLBACK[args_key]
+            curl_result = _curl_toss_api(curl_url, method=curl_method)
+            if curl_result and "_error" not in curl_result:
+                return _transform_fallback(args_key, curl_result)
+            if curl_result and curl_result.get("_error") == "maintenance":
+                return {"_error": "maintenance"}
         return {"_error": result.stderr.strip()}
     except subprocess.TimeoutExpired:
         return {"_error": "timeout"}
@@ -439,10 +569,18 @@ def _generate_auto_lesson(symbol: str, pnl: float, exit_reason: str, signal: dic
 
 def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run: bool,
                 grade: str = "A", score: float = 0, reason: str = "",
-                market: str = "us") -> bool:
+                market: str = "us", group_id: str = None, tranche_seq: int = 1) -> bool:
     """매수 실행 (시장가 주문, 미체결 시 자동 취소)"""
+    tranche_label = f" [T{tranche_seq}]" if tranche_seq > 1 else ""
     order_type_label = "지정가" if market == "us" else "시장가"
-    log(f"  BUY: {symbol} x{qty} @ ~{price} ({grade}등급, {score}점) [{order_type_label}]")
+    log(f"  BUY: {symbol} x{qty} @ ~{price} ({grade}등급, {score}점) [{order_type_label}]{tranche_label}")
+
+    # trade-logger 공통 인자
+    _logger_extra = []
+    if group_id:
+        _logger_extra += ["--group-id", group_id]
+    if tranche_seq:
+        _logger_extra += ["--tranche-seq", str(tranche_seq)]
 
     if dry_run:
         log(f"  [DRY RUN] 주문 스킵")
@@ -451,7 +589,8 @@ def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run
                     "--qty", str(qty), "--price", str(price),
                     "--grade", grade, "--score", str(score),
                     "--reason", reason or "autotrade-dry-run",
-                    "--mode", "dry-run")
+                    "--mode", "dry-run",
+                    *_logger_extra)
         state.today_trades += 1
         return True
 
@@ -492,7 +631,8 @@ def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run
                         "--qty", str(qty), "--price", str(filled_price),
                         "--grade", grade, "--score", str(score),
                         "--reason", reason or "autotrade",
-                        "--mode", "autotrade")
+                        "--mode", "autotrade",
+                        *_logger_extra)
             state.today_trades += 1
             return True
         else:
@@ -591,6 +731,12 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool,
             state.consecutive_losses += 1
         else:
             state.consecutive_losses = 0
+        # dry-run에서도 트랜치 플랜 정리
+        try:
+            complete_tranche_plan_by_symbol(symbol)
+        except Exception:
+            pass
+        state.reserved_budgets.pop(symbol, None)
         return True
 
     # 보유 수량 확인
@@ -645,13 +791,22 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool,
                     "--price", str(price), "--qty", str(qty),
                     "--pnl_pct", str(round(pnl, 2)), "--exit_reason", exit_reason)
 
-        # 거래 기록
-        close_result = run_script("trade-logger.py", "close",
+        # 거래 기록 (분할매수 → close-all로 전체 트랜치 일괄 청산)
+        close_result = run_script("trade-logger.py", "close-all",
                     "--symbol", symbol,
                     "--exit-price", str(price),
                     "--exit-reason", exit_reason)
         if isinstance(close_result, dict) and close_result.get("_error"):
             state.record_error(f"SELL {symbol} 성공했지만 기록 실패: {close_result['_error']}")
+        elif isinstance(close_result, list) and len(close_result) == 0:
+            state.record_error(f"SELL {symbol} 성공했지만 DB에 open 트레이드 없음")
+
+        # 트랜치 플랜 정리 + 예약 예산 해제
+        try:
+            complete_tranche_plan_by_symbol(symbol)
+        except Exception:
+            pass
+        state.reserved_budgets.pop(symbol, None)
 
         # 자동 교훈 생성
         auto_lesson = _generate_auto_lesson(symbol, pnl, exit_reason, signal)
@@ -673,6 +828,203 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool,
         log(f"  SELL FAILED: {result.stderr[:200]}")
         state.record_error(f"SELL {symbol} failed: {result.stderr[:100]}")
         return False
+
+
+# ─── 분할매수 트랜치 처리 ───
+
+def _estimate_fx_rate() -> float:
+    """KRW/USD 환율 추정. account summary에서 조회, 실패 시 기본값."""
+    try:
+        summary = run_tossctl("account", "summary")
+        if isinstance(summary, dict) and not summary.get("_error"):
+            markets = summary.get("markets", {})
+            usd = markets.get("us", {}).get("orderable_amount_usd", 0)
+            krw = markets.get("us", {}).get("orderable_amount_krw", 0)
+            if usd > 0 and krw > 0:
+                return krw / usd
+    except Exception:
+        pass
+    return 1450  # 기본 환율
+
+def process_pending_tranches(state: DaemonState, config: dict, positions: list,
+                              dry_run: bool, effective_market: str):
+    """대기 중인 트랜치 플랜을 처리: 조건 평가 → 추가 매수 또는 타임아웃."""
+    plans = get_active_tranche_plans()
+    if not plans:
+        return
+
+    log(f"  [트랜치] 활성 플랜 {len(plans)}개 처리")
+
+    for plan in plans:
+        group_id = plan["group_id"]
+        symbol = plan["symbol"]
+        entry_t1 = plan["entry_price_t1"]
+        next_tranche = plan["next_tranche"]
+        total_tranches = plan["total_tranches"]
+        cycles_waited = plan["cycles_waited"]
+        max_wait = plan["max_wait_cycles"]
+        next_condition = plan["next_condition"]
+        ratios = json.loads(plan["ratios"]) if isinstance(plan["ratios"], str) else plan["ratios"]
+        plan_market = plan.get("market", "us").lower()
+
+        if next_tranche > total_tranches:
+            complete_tranche_plan(group_id)
+            state.reserved_budgets.pop(symbol, None)
+            continue
+
+        # 현재가 조회: positions에서 찾거나 tossctl quote로 조회
+        current_price_raw = 0
+        if isinstance(positions, list):
+            for p in positions:
+                p_sym = p.get("symbol", p.get("product_code", ""))
+                if p_sym == symbol:
+                    current_price_raw = p.get("current_price", 0)
+                    break
+        if current_price_raw <= 0:
+            quote = run_tossctl("quote", symbol)
+            if isinstance(quote, dict) and not quote.get("_error"):
+                current_price_raw = quote.get("last", quote.get("current_price", 0))
+        if current_price_raw <= 0:
+            log(f"  [트랜치] {symbol} 시세 조회 실패 → 스킵")
+            update_tranche_plan(group_id, {"cycles_waited": cycles_waited + 1})
+            continue
+
+        # US 종목: positions의 current_price는 KRW → entry_price_t1(USD)과 비교하려면 USD 변환
+        # entry_price_t1이 USD 단위인지 판별: 5000 미만이면 USD
+        if plan_market == "us" and entry_t1 < 5000 and current_price_raw > 5000:
+            fx_rate = _estimate_fx_rate()
+            current_price = current_price_raw / fx_rate  # KRW → USD
+        else:
+            current_price = current_price_raw
+
+        # 타임아웃 체크
+        if cycles_waited >= max_wait:
+            timeout_action = config.get("tranche_timeout_action", "cancel")
+            if timeout_action == "execute":
+                log(f"  [트랜치] {symbol} T{next_tranche} 대기 초과 → 시장가 실행")
+                _execute_tranche(state, config, plan, current_price, dry_run, plan_market)
+            else:
+                log(f"  [트랜치] {symbol} T{next_tranche} 대기 초과 → 취소")
+                complete_tranche_plan(group_id, "expired")
+                state.reserved_budgets.pop(symbol, None)
+            continue
+
+        # 조건 평가
+        condition_met = False
+        if next_condition == "dip_buy":
+            dip_pct = config.get("tranche2_dip_pct", -1.5) if next_tranche == 2 else config.get("tranche3_dip_pct", -1.5)
+            target_price = entry_t1 * (1 + dip_pct / 100)
+            if current_price <= target_price:
+                condition_met = True
+                log(f"  [트랜치] {symbol} T{next_tranche} 눌림목 도달: {current_price:.2f} <= {target_price:.2f}")
+
+        elif next_condition == "breakout_confirm":
+            breakout_pct = config.get("tranche3_breakout_pct", 1.0) if next_tranche == 3 else config.get("tranche2_breakout_pct", 1.0)
+            target_price = entry_t1 * (1 + breakout_pct / 100)
+            if current_price >= target_price:
+                condition_met = True
+                log(f"  [트랜치] {symbol} T{next_tranche} 돌파 확인: {current_price:.2f} >= {target_price:.2f}")
+
+        elif next_condition == "time_based":
+            # N 사이클 후 무조건 실행
+            wait_cycles = config.get(f"tranche{next_tranche}_wait_cycles", 6)
+            if cycles_waited >= wait_cycles:
+                condition_met = True
+                log(f"  [트랜치] {symbol} T{next_tranche} 시간 기반 실행: {cycles_waited} >= {wait_cycles} 사이클")
+
+        if condition_met:
+            _execute_tranche(state, config, plan, current_price, dry_run, plan_market)
+        else:
+            update_tranche_plan(group_id, {"cycles_waited": cycles_waited + 1})
+            log(f"  [트랜치] {symbol} T{next_tranche} 대기 ({cycles_waited + 1}/{max_wait})")
+
+
+def _execute_tranche(state: DaemonState, config: dict, plan: dict,
+                      current_price: float, dry_run: bool, market: str):
+    """트랜치 매수 실행.
+
+    current_price: US 종목은 USD 가격, KR 종목은 KRW 가격으로 전달되어야 함.
+    process_pending_tranches()에서 entry_price_t1(USD) 기준으로 조건 평가하므로,
+    여기서도 USD 기준으로 예산 계산 후, 주문 시 KRW 변환.
+    """
+    group_id = plan["group_id"]
+    symbol = plan["symbol"]
+    next_tranche = plan["next_tranche"]
+    total_tranches = plan["total_tranches"]
+    ratios = json.loads(plan["ratios"]) if isinstance(plan["ratios"], str) else plan["ratios"]
+
+    # 예약 예산에서 이번 트랜치 비율 산출
+    reserved = state.reserved_budgets.get(symbol, {})
+    budget_usd = reserved.get("usd", 0)
+    budget_krw = reserved.get("krw", 0)
+
+    # 남은 트랜치 비율 합
+    remaining_ratios = ratios[next_tranche - 1:]
+    ratio_sum = sum(remaining_ratios)
+    this_ratio = ratios[next_tranche - 1] if next_tranche - 1 < len(ratios) else 0
+
+    if ratio_sum <= 0 or this_ratio <= 0:
+        complete_tranche_plan(group_id)
+        state.reserved_budgets.pop(symbol, None)
+        return
+
+    # 이번 트랜치에 배분할 예산 비율 (남은 예산 중)
+    alloc_frac = this_ratio / ratio_sum
+
+    if market == "us":
+        alloc_usd = budget_usd * alloc_frac
+        # current_price는 USD 단위 (entry_price_t1과 동일 단위)
+        price_usd = current_price
+        if price_usd > 0:
+            qty = max(1, int(alloc_usd / price_usd))
+        else:
+            qty = 1
+        cost_usd = qty * price_usd
+        reserved["usd"] = max(0, budget_usd - cost_usd)
+        # 주문은 KRW 변환 필요 — 환율 추정
+        fx_rate = _estimate_fx_rate()
+        order_price = int(price_usd * fx_rate)
+    else:
+        alloc_krw = budget_krw * alloc_frac
+        if current_price > 0:
+            qty = max(1, int(alloc_krw / current_price))
+        else:
+            qty = 1
+        cost = qty * current_price
+        reserved["krw"] = max(0, budget_krw - cost)
+        order_price = current_price
+
+    state.reserved_budgets[symbol] = reserved
+
+    success = execute_buy(
+        symbol, order_price, qty, state, dry_run,
+        grade=plan.get("grade", ""), score=plan.get("score", 0),
+        reason=f"tranche_t{next_tranche}:{plan.get('entry_reason', '')}",
+        market=market, group_id=group_id, tranche_seq=next_tranche,
+    )
+
+    if success:
+        new_filled = plan["tranches_filled"] + 1
+        new_next = next_tranche + 1
+        updates = {
+            "tranches_filled": new_filled,
+            "next_tranche": new_next,
+            "cycles_waited": 0,
+        }
+        # 다음 트랜치 조건 설정
+        if new_next <= total_tranches:
+            cond_key = f"tranche{new_next}_condition"
+            updates["next_condition"] = config.get(cond_key, "dip_buy")
+            wait_key = f"tranche{new_next}_max_wait_cycles"
+            updates["max_wait_cycles"] = config.get(wait_key, 24)
+        else:
+            updates["status"] = "completed"
+            state.reserved_budgets.pop(symbol, None)
+
+        update_tranche_plan(group_id, updates)
+        log(f"  [트랜치] {symbol} T{next_tranche} 매수 완료 ({new_filled}/{total_tranches})")
+    else:
+        update_tranche_plan(group_id, {"cycles_waited": plan["cycles_waited"] + 1})
 
 
 # ─── 메인 루프 ───
@@ -784,6 +1136,13 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         state.status = DaemonStatus.RUNNING
         return True
 
+    # 7.5. 대기 트랜치 처리 (분할매수)
+    if config.get("scaled_entry_enabled", False):
+        try:
+            process_pending_tranches(state, config, positions, dry_run, effective_market)
+        except Exception as e:
+            state.record_error(f"트랜치 처리 오류: {e}")
+
     # 8. 매수 후보 탐색
     candidates = find_buy_candidates(config, effective_market)
 
@@ -823,6 +1182,10 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
     if slots_kr <= 0 and slots_us <= 0:
         log(f"  포지션 한도 도달 → 매수 스킵")
     else:
+        # 예약 예산 차감 (분할매수 대기분)
+        reserved_usd = sum(v.get("usd", 0) for v in state.reserved_budgets.values())
+        reserved_krw = sum(v.get("krw", 0) for v in state.reserved_budgets.values())
+
         # 통화별 예산 분리: KR=원화, US=달러 (강제 환전 방지)
         orderable_krw = 0  # 국내 주문가능 원화
         orderable_usd = 0  # 해외 주문가능 달러
@@ -835,14 +1198,27 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             us_krw = markets.get("us", {}).get("orderable_amount_krw", 0)
             if orderable_usd > 0 and us_krw > 0:
                 fx_rate = us_krw / orderable_usd
+        # 예약분 차감
+        orderable_usd = max(0, orderable_usd - reserved_usd)
+        orderable_krw = max(0, orderable_krw - reserved_krw)
         log(f"  예산: KR {orderable_krw:,.0f}원 | US ${orderable_usd:,.2f} (환율 {fx_rate:,.0f})")
+        if reserved_usd > 0 or reserved_krw > 0:
+            log(f"  예약: KR {reserved_krw:,.0f}원 | US ${reserved_usd:,.2f} (트랜치 대기분)")
+
+        # 활성 트랜치 플랜이 있는 종목은 신규 매수 스킵
+        tranche_active_symbols = set()
+        if config.get("scaled_entry_enabled", False):
+            try:
+                tranche_active_symbols = {p["symbol"] for p in get_active_tranche_plans()}
+            except Exception:
+                pass
 
         # 잔여 슬롯만큼 후보 순회하며 매수
         bought_kr = 0
         bought_us = 0
         for c in candidates:
             sym = c.get("symbol", "")
-            if sym in protected or sym in current_positions:
+            if sym in protected or sym in current_positions or sym in tranche_active_symbols:
                 continue
 
             price = c.get("current_price", 0)
@@ -864,53 +1240,137 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
 
                 remaining_us = slots_us - bought_us
                 per_slot_usd = orderable_usd / remaining_us if remaining_us > 0 else 0
-                max_invest_usd = min(per_slot_usd,
-                                     orderable_usd * config.get("max_position_pct", 30) / 100)
+                full_invest_usd = min(per_slot_usd,
+                                      orderable_usd * config.get("max_position_pct", 30) / 100)
 
-                if max_invest_usd < price_usd:
+                if full_invest_usd < price_usd:
                     log(f"  {sym} USD 잔고 부족 (슬롯당 ${per_slot_usd:.2f} < ${price_usd:.2f}) → 스킵")
                     continue
 
-                qty = max(1, int(max_invest_usd / price_usd))
+                # 분할매수: 1차 트랜치만 매수, 나머지 예약
+                scaled = config.get("scaled_entry_enabled", False)
+                ratios = config.get("scaled_entry_ratios", [0.4, 0.35, 0.25])
+                num_tranches = config.get("scaled_entry_tranches", 3)
+
+                if scaled and len(ratios) >= 2:
+                    t1_invest = full_invest_usd * ratios[0]
+                    reserve_usd = full_invest_usd - t1_invest
+                else:
+                    t1_invest = full_invest_usd
+                    reserve_usd = 0
+
+                qty = max(1, int(t1_invest / price_usd))
                 cost_usd = qty * price_usd
                 log(f"  {sym} ${price_usd:.2f} x{qty} = ${cost_usd:.2f} (→ 주문가 {price_krw:,}원)")
 
                 strategy = c.get("strategy", "daytrade")
+                group_id = None
+                if scaled and len(ratios) >= 2:
+                    group_id = f"{sym}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
                 _cycle_buys_attempted += 1
                 if execute_buy(sym, price_krw, qty, state, dry_run,
                                grade=c.get("grade", "?"), score=c.get("score", 0),
                                reason=f"{strategy}:{c.get('recommendation', '')}",
-                               market=buy_market):
+                               market=buy_market,
+                               group_id=group_id, tranche_seq=1):
                     orderable_usd -= cost_usd
                     current_positions.add(sym)
                     current_us.add(sym)
                     bought_us += 1
                     _cycle_buys_filled += 1
+
+                    # 분할매수: 예산 예약 + 트랜치 플랜 생성
+                    if scaled and reserve_usd > 0 and group_id:
+                        state.reserved_budgets[sym] = {"usd": reserve_usd, "krw": 0}
+                        try:
+                            create_tranche_plan({
+                                "group_id": group_id,
+                                "symbol": sym,
+                                "market": "US",
+                                "total_tranches": num_tranches,
+                                "planned_qty": max(1, int(full_invest_usd / price_usd)),
+                                "planned_budget": full_invest_usd,
+                                "entry_price_t1": price_usd,
+                                "ratios": json.dumps(ratios),
+                                "tranches_filled": 1,
+                                "next_tranche": 2,
+                                "next_condition": config.get("tranche2_condition", "dip_buy"),
+                                "max_wait_cycles": config.get("tranche2_max_wait_cycles", 12),
+                                "grade": c.get("grade", ""),
+                                "score": c.get("score", 0),
+                                "entry_reason": f"{strategy}:{c.get('recommendation', '')}",
+                            })
+                            log(f"  [트랜치] {sym} 플랜 생성: {num_tranches}단계, 예약 ${reserve_usd:.2f}")
+                        except Exception as e:
+                            state.record_error(f"트랜치 플랜 생성 실패: {e}")
             else:
                 # --- KR: 원화 예산으로 계산 ---
                 remaining_kr = slots_kr - bought_kr
                 per_slot_krw = orderable_krw / remaining_kr if remaining_kr > 0 else 0
-                max_invest_krw = min(per_slot_krw,
-                                     orderable_krw * config.get("max_position_pct", 30) / 100)
+                full_invest_krw = min(per_slot_krw,
+                                      orderable_krw * config.get("max_position_pct", 30) / 100)
 
-                if max_invest_krw < price:
+                if full_invest_krw < price:
                     log(f"  {sym} 원화 잔고 부족 (슬롯당 {per_slot_krw:,.0f}원 < {price:,.0f}원) → 스킵")
                     continue
 
-                qty = max(1, int(max_invest_krw / price))
+                # 분할매수: 1차 트랜치만 매수, 나머지 예약
+                scaled = config.get("scaled_entry_enabled", False)
+                ratios = config.get("scaled_entry_ratios", [0.4, 0.35, 0.25])
+                num_tranches = config.get("scaled_entry_tranches", 3)
+
+                if scaled and len(ratios) >= 2:
+                    t1_invest = full_invest_krw * ratios[0]
+                    reserve_krw = full_invest_krw - t1_invest
+                else:
+                    t1_invest = full_invest_krw
+                    reserve_krw = 0
+
+                qty = max(1, int(t1_invest / price))
                 cost_krw = qty * price
 
                 strategy = c.get("strategy", "daytrade")
+                group_id = None
+                if scaled and len(ratios) >= 2:
+                    group_id = f"{sym}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
                 _cycle_buys_attempted += 1
                 if execute_buy(sym, price, qty, state, dry_run,
                                grade=c.get("grade", "?"), score=c.get("score", 0),
                                reason=f"{strategy}:{c.get('recommendation', '')}",
-                               market=buy_market):
+                               market=buy_market,
+                               group_id=group_id, tranche_seq=1):
                     orderable_krw -= cost_krw
                     current_positions.add(sym)
                     current_kr.add(sym)
                     bought_kr += 1
                     _cycle_buys_filled += 1
+
+                    # 분할매수: 예산 예약 + 트랜치 플랜 생성
+                    if scaled and reserve_krw > 0 and group_id:
+                        state.reserved_budgets[sym] = {"usd": 0, "krw": reserve_krw}
+                        try:
+                            create_tranche_plan({
+                                "group_id": group_id,
+                                "symbol": sym,
+                                "market": "KR",
+                                "total_tranches": num_tranches,
+                                "planned_qty": max(1, int(full_invest_krw / price)),
+                                "planned_budget": full_invest_krw,
+                                "entry_price_t1": price,
+                                "ratios": json.dumps(ratios),
+                                "tranches_filled": 1,
+                                "next_tranche": 2,
+                                "next_condition": config.get("tranche2_condition", "dip_buy"),
+                                "max_wait_cycles": config.get("tranche2_max_wait_cycles", 12),
+                                "grade": c.get("grade", ""),
+                                "score": c.get("score", 0),
+                                "entry_reason": f"{strategy}:{c.get('recommendation', '')}",
+                            })
+                            log(f"  [트랜치] {sym} 플랜 생성: {num_tranches}단계, 예약 {reserve_krw:,.0f}원")
+                        except Exception as e:
+                            state.record_error(f"트랜치 플랜 생성 실패: {e}")
 
         bought = bought_kr + bought_us
         if bought > 0:
