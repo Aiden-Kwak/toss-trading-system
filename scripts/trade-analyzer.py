@@ -22,6 +22,14 @@ from pathlib import Path
 LOG_FILE = Path.home() / "Library/Application Support/tossctl/trade-log.json"
 CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/signal-config.json"
 
+# DB 연동
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from db import query_trades as _db_query
+    _DB_OK = True
+except Exception:
+    _DB_OK = False
+
 # signal-engine 기본값
 DEFAULT_PARAMS = {
     "stop_loss_pct": -3.0,
@@ -34,6 +42,11 @@ DEFAULT_PARAMS = {
 
 
 def load_log() -> list:
+    if _DB_OK:
+        try:
+            return _db_query(status="all", limit=10000)
+        except Exception:
+            pass
     if LOG_FILE.exists():
         return json.loads(LOG_FILE.read_text())
     return []

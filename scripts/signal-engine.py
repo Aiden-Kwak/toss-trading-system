@@ -89,18 +89,11 @@ def calculate_kelly(win_rate: float, avg_win: float, avg_loss: float,
 # ─── 손절/익절 체크 ───
 
 def _load_entry_grades() -> dict:
-    """trade-log에서 종목별 진입 등급 조회"""
-    from pathlib import Path
-    log_file = Path.home() / "Library/Application Support/tossctl/trade-log.json"
-    if not log_file.exists():
-        return {}
+    """DB에서 종목별 진입 등급 조회 (집계 쿼리)"""
     try:
-        trades = json.loads(log_file.read_text())
-        grades = {}
-        for t in trades:
-            if t.get("status") == "open":
-                grades[t.get("symbol", "")] = t.get("entry_grade", "")
-        return grades
+        import sys as _sys; _sys.path.insert(0, str(Path(__file__).parent))
+        from db import query_open_entry_grades
+        return query_open_entry_grades()
     except Exception:
         return {}
 
@@ -498,34 +491,53 @@ def evaluate_buy(quote: dict, portfolio: dict, config: dict, tech: dict = None) 
     total_score += context_score
 
     # ─── 6. 기술적 확인 (0-15점) — tech 데이터 있을 때만 ───
+    # 두 가지 셋업 모두 인정:
+    #  (A) 모멘텀 지속: RSI 50-65 + EMA 골든 + BB 0.5-0.85 (추세 확인)
+    #  (B) 과매도 반등: RSI ≤ 35 + EMA 골든 + BB ≤ 0.3 (mean reversion)
     tech_score = 0
+    vetoed = False
+    anti_signals = 0
     if tech:
-        # RSI 과매도 + EMA 골든크로스 + 볼린저 하단 = 강한 매수 시그널
-        signals = 0
-        if rsi is not None and rsi <= 35: signals += 1
-        if ema9 is not None and ema21 is not None and ema9 > ema21: signals += 1
-        if bb_pctb is not None and bb_pctb <= 0.3: signals += 1
+        # 셋업 A (모멘텀 지속)
+        sig_a = 0
+        if rsi is not None and 50 <= rsi <= 65: sig_a += 1
+        if ema9 is not None and ema21 is not None and ema9 > ema21: sig_a += 1
+        if bb_pctb is not None and 0.5 <= bb_pctb <= 0.85: sig_a += 1
+        # 셋업 B (과매도 반등)
+        sig_b = 0
+        if rsi is not None and rsi <= 35: sig_b += 1
+        if ema9 is not None and ema21 is not None and ema9 > ema21: sig_b += 1
+        if bb_pctb is not None and bb_pctb <= 0.3: sig_b += 1
 
-        if signals >= 3: tech_score = 15  # 모든 기술적 지표 동의
+        signals = max(sig_a, sig_b)
+        if signals >= 3: tech_score = 15
         elif signals >= 2: tech_score = 10
         elif signals >= 1: tech_score = 4
         else: tech_score = 0
 
-        # 역방향 시그널: RSI 과매수 + 데드크로스 = 강한 패널티
-        anti_signals = 0
+        # 역방향 시그널: RSI 과매수 / 데드크로스 / BB 상단 돌파
         if rsi is not None and rsi >= 70: anti_signals += 1
         if ema9 is not None and ema21 is not None and ema9 < ema21: anti_signals += 1
         if bb_pctb is not None and bb_pctb >= 0.9: anti_signals += 1
-        if anti_signals >= 2: tech_score = 0  # 역방향 → 0점
+        if anti_signals >= 2:
+            tech_score = 0
+            # veto_overbought: anti ≥ 2면 매수 후보 탈락 (과열 진입 방지)
+            if config.get("veto_overbought", True):
+                vetoed = True
 
-    breakdown["technical"] = {"score": tech_score, "max": 15, "available": tech is not None}
+    breakdown["technical"] = {"score": tech_score, "max": 15, "available": tech is not None,
+                               "anti_signals": anti_signals, "vetoed": vetoed}
     total_score += tech_score
 
     # ─── 등급 산정 (100점 만점) ───
     total_score = max(0, total_score)
     pct = total_score
 
-    if pct >= 75:
+    if vetoed:
+        # 과열 종목은 점수와 무관하게 D 등급 강제 (매수 차단)
+        grade = "D"
+        recommendation = "SKIP_OVERBOUGHT"
+    elif pct >= 75:
         grade = "A"
         recommendation = "STRONG_BUY"
     elif pct >= 55:

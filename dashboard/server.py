@@ -25,6 +25,14 @@ try:
 except Exception:
     _DB_OK = False
 
+# trade-analyzer 직접 import
+try:
+    import importlib
+    _analyzer = importlib.import_module("trade-analyzer")
+    _ANALYZER_OK = True
+except Exception:
+    _ANALYZER_OK = False
+
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8777
 DASHBOARD_DIR = Path(__file__).parent
 REPO_DIR = DASHBOARD_DIR.parent
@@ -204,35 +212,47 @@ def _transform_curl_response(args: tuple, data: dict) -> dict | list:
             "primary_key": result.get("primaryKey"),
         }
     if args == ("portfolio", "positions"):
-        # SORTED_OVERVIEW 섹션에서 포지션 추출
-        positions = []
-        sections = result.get("sections", [])
-        for sec in sections:
-            if sec.get("type") != "SORTED_OVERVIEW":
-                continue
-            for prod in sec.get("data", {}).get("products", []):
-                market_type = prod.get("marketType", "")
-                market = "us" if "US" in market_type else "kr"
-                for item in prod.get("items", []):
-                    sym = item.get("stockSymbol") or item.get("stockName", "")
-                    cur = item.get("currentPrice", {})
-                    buy = item.get("purchasePrice", {})
-                    pnl = item.get("profitLossAmount", {})
-                    pnl_rate = item.get("profitLossRate", {})
-                    positions.append({
-                        "symbol": sym,
-                        "name": item.get("stockName", ""),
-                        "market": market,
-                        "quantity": item.get("quantity", 0),
-                        "current_price": cur.get("krw", 0),
-                        "current_price_usd": cur.get("usd"),
-                        "avg_price": buy.get("krw", 0) if buy else 0,
-                        "avg_price_usd": buy.get("usd") if buy else None,
-                        "pnl_amount": pnl.get("krw", 0) if pnl else 0,
-                        "pnl_rate": pnl_rate.get("krw", 0) if pnl_rate else 0,
-                        "evaluated_amount": item.get("evaluatedAmount", {}).get("krw", 0),
-                    })
-        return positions
+        return _extract_positions(result)
+    # 기본: 원본 반환
+    return result
+
+
+def _extract_positions(result: dict) -> list:
+    """SORTED_OVERVIEW 섹션에서 포지션 추출 (tossctl 형식 호환)"""
+    positions = []
+    sections = result.get("sections", [])
+    for sec in sections:
+        if sec.get("type") != "SORTED_OVERVIEW":
+            continue
+        for prod in sec.get("data", {}).get("products", []):
+            market_type = prod.get("marketType", "")
+            market_code = "NSQ" if "US" in market_type else "KSP"
+            for item in prod.get("items", []):
+                sym = item.get("stockSymbol") or item.get("stockName", "")
+                cur = item.get("currentPrice") or {}
+                buy = item.get("purchasePrice") or {}
+                pnl_amt = item.get("profitLossAmount") or {}
+                pnl_rate = item.get("profitLossRate") or {}
+                daily_pnl_amt = item.get("dailyProfitLossAmount") or {}
+                daily_pnl_rate = item.get("dailyProfitLossRate") or {}
+                positions.append({
+                    "product_code": item.get("stockCode", ""),
+                    "symbol": sym,
+                    "name": item.get("stockName", ""),
+                    "market_type": market_type,
+                    "market_code": market_code,
+                    "quantity": item.get("quantity", 0),
+                    "average_price": buy.get("krw", 0),
+                    "current_price": cur.get("krw", 0),
+                    "average_price_usd": buy.get("usd"),
+                    "current_price_usd": cur.get("usd"),
+                    "market_value": (item.get("evaluatedAmount") or {}).get("krw", 0),
+                    "unrealized_pnl": pnl_amt.get("krw", 0),
+                    "profit_rate": pnl_rate.get("krw", 0),
+                    "daily_profit_loss": daily_pnl_amt.get("krw", 0),
+                    "daily_profit_rate": daily_pnl_rate.get("krw", 0),
+                })
+    return positions
     # 기본: 원본 반환
     return result
 
@@ -333,7 +353,14 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(run_tossctl("account", "summary"))
 
         elif path == "/api/portfolio/positions":
-            self._json_response(run_tossctl("portfolio", "positions"))
+            # curl 직접 호출 (tossctl보다 daily 필드 등 데이터가 풍부)
+            curl_result = _curl_toss_api(
+                "https://wts-cert-api.tossinvest.com/api/v2/dashboard/asset/sections/all",
+                method="POST")
+            if curl_result and "error" not in curl_result:
+                self._json_response(_extract_positions(curl_result.get("result", curl_result)))
+            else:
+                self._json_response(run_tossctl("portfolio", "positions"))
 
         elif path == "/api/orders/list":
             self._json_response(run_tossctl("orders", "list"))
@@ -521,25 +548,41 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(pipeline)
 
         elif path == "/api/trades":
-            result = subprocess.run(
-                [PYTHON, str(SCRIPTS_DIR / "trade-logger.py"), "list", "--status", params.get("status", "all")],
-                capture_output=True, text=True, timeout=5
-            )
-            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+            if _DB_OK:
+                trades = db_trades(status=params.get("status", "all"),
+                                   limit=int(params.get("limit", "200")))
+                self._json_response(trades)
+            else:
+                result = subprocess.run(
+                    [PYTHON, str(SCRIPTS_DIR / "trade-logger.py"), "list", "--status", params.get("status", "all")],
+                    capture_output=True, text=True, timeout=5
+                )
+                self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/trades/analyze":
-            result = subprocess.run(
-                [PYTHON, str(SCRIPTS_DIR / "trade-analyzer.py"), "analyze"],
-                capture_output=True, text=True, timeout=10
-            )
-            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+            if _ANALYZER_OK:
+                trades = _analyzer.load_log()
+                analysis = _analyzer.analyze(trades)
+                self._json_response(analysis)
+            else:
+                result = subprocess.run(
+                    [PYTHON, str(SCRIPTS_DIR / "trade-analyzer.py"), "analyze"],
+                    capture_output=True, text=True, timeout=10
+                )
+                self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/trades/suggest":
-            result = subprocess.run(
-                [PYTHON, str(SCRIPTS_DIR / "trade-analyzer.py"), "suggest"],
-                capture_output=True, text=True, timeout=10
-            )
-            self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
+            if _ANALYZER_OK:
+                trades = _analyzer.load_log()
+                analysis = _analyzer.analyze(trades)
+                suggestions = _analyzer.suggest(analysis)
+                self._json_response({"analysis": analysis.get("stats", {}), "suggestions": suggestions})
+            else:
+                result = subprocess.run(
+                    [PYTHON, str(SCRIPTS_DIR / "trade-analyzer.py"), "suggest"],
+                    capture_output=True, text=True, timeout=10
+                )
+                self._json_response(json.loads(result.stdout) if result.returncode == 0 else {"error": result.stderr})
 
         elif path == "/api/daemon/status":
             state_file = Path.home() / "Library/Application Support/tossctl/daemon-state.json"
@@ -663,6 +706,28 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 self._json_response({"error": "DB not available"})
 
+        elif path == "/api/db/performance":
+            # 성과 지표: Sharpe, Sortino, MDD (전체/주간)
+            try:
+                import importlib.util as _iu
+                from pathlib import Path as _P
+                _spec = _iu.spec_from_file_location("perf_metrics",
+                    str(_P(__file__).parent.parent / "scripts" / "performance-metrics.py"))
+                _pm = _iu.module_from_spec(_spec)
+                _spec.loader.exec_module(_pm)
+                days = int(params.get("days", "30"))
+                result = _pm.summary(days=days)
+                # 전체 equity curve + daily returns 추가 (차트용)
+                try:
+                    rows = _pm.fetch_daily_returns(days=days)
+                    result["equity_curve"] = _pm.equity_curve(rows)
+                    result["daily_returns"] = rows
+                except Exception:
+                    pass
+                self._json_response(result)
+            except Exception as e:
+                self._json_response({"error": f"performance metrics failed: {e}"})
+
         elif path == "/api/db/tranche-plans":
             if _DB_OK:
                 symbol = params.get("symbol")
@@ -745,8 +810,16 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/trades/config/save":
             config_file = Path.home() / "Library/Application Support/tossctl/signal-config.json"
             config_file.parent.mkdir(parents=True, exist_ok=True)
-            config_file.write_text(json.dumps(body, ensure_ascii=False, indent=2))
-            self._json_response({"ok": True, "saved": body})
+            # 기존 설정 병합 — UI에서 전송한 키만 덮어쓰고 나머지는 보존
+            existing = {}
+            if config_file.exists():
+                try:
+                    existing = json.loads(config_file.read_text())
+                except Exception:
+                    existing = {}
+            existing.update(body)
+            config_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2))
+            self._json_response({"ok": True, "saved": existing})
 
         elif path == "/api/daemon/start":
             mode = body.get("mode", "dry-run")  # dry-run or live

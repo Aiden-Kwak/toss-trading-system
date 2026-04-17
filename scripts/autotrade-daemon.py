@@ -12,6 +12,7 @@ autotrade-daemon.py — Claude 없이 독립 실행되는 자동매매 데몬
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -22,16 +23,32 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from enum import Enum
 
+sys.path.insert(0, str(Path(__file__).parent))
+
 try:
-    sys.path.insert(0, str(Path(__file__).parent))
     from db import (init_db, insert_cycle, insert_error as _db_insert_error,
                     create_tranche_plan, get_active_tranche_plans,
                     update_tranche_plan, complete_tranche_plan,
-                    complete_tranche_plan_by_symbol)
+                    complete_tranche_plan_by_symbol,
+                    update_trade_mfe_mae, find_latest_screener_result_id)
     init_db()
     _DB_OK = True
+
+    # performance-metrics (하이픈 파일명 → importlib 로드)
+    try:
+        import importlib.util as _iu
+        _spec = _iu.spec_from_file_location("perf_metrics",
+            str(Path(__file__).parent / "performance-metrics.py"))
+        _perf = _iu.module_from_spec(_spec)
+        _spec.loader.exec_module(_perf)
+        _PERF_OK = True
+    except Exception:
+        _PERF_OK = False
+        _perf = None
 except Exception:
     _DB_OK = False
+    _PERF_OK = False
+    _perf = None
     def insert_cycle(_): return None
     def _db_insert_error(*_a, **_k): return None
     def create_tranche_plan(_): return ""
@@ -39,12 +56,109 @@ except Exception:
     def update_tranche_plan(_g, _u): return False
     def complete_tranche_plan(_g, _s="completed"): return False
     def complete_tranche_plan_by_symbol(_s): return 0
+    def update_trade_mfe_mae(_s, _p): return None
+    def find_latest_screener_result_id(_s): return None
+
+# notify.py 직접 import (subprocess 대신 함수 호출)
+try:
+    from notify import (notify_trade as _notify_trade, notify_signal as _notify_signal,
+                         notify_error as _notify_error, notify_session as _notify_session,
+                         notify_daemon_status as _notify_daemon, notify_scan as _notify_scan)
+    _NOTIFY_OK = True
+except Exception:
+    _NOTIFY_OK = False
+
+# trade-logger.py 직접 import (subprocess 대신 함수 호출)
+try:
+    import importlib
+    _trade_logger = importlib.import_module("trade-logger")
+    _LOGGER_OK = True
+except Exception:
+    _trade_logger = None
+    _LOGGER_OK = False
+
+
+def _notify(cmd: str, **kwargs):
+    """알림 전송: 직접 호출 우선, 실패 시 subprocess fallback."""
+    if _NOTIFY_OK:
+        try:
+            if cmd == "trade":
+                _notify_trade(kwargs.get("symbol", ""), kwargs.get("side", "buy"),
+                              float(kwargs.get("price", 0)), int(kwargs.get("qty", 0)),
+                              kwargs.get("grade", ""), float(kwargs.get("score", 0)),
+                              kwargs.get("strategy", ""),
+                              pnl_pct=float(kwargs["pnl_pct"]) if kwargs.get("pnl_pct") else None,
+                              exit_reason=kwargs.get("exit_reason"))
+            elif cmd == "signal":
+                _notify_signal(kwargs.get("symbol", ""), kwargs.get("action", ""),
+                               kwargs.get("reason", ""), float(kwargs.get("profit_rate", 0)))
+            elif cmd == "error":
+                _notify_error(kwargs.get("message", ""))
+            elif cmd == "session":
+                _notify_session(kwargs.get("status", ""), kwargs.get("message", ""))
+            elif cmd == "daemon":
+                _notify_daemon(kwargs.get("status", ""), kwargs.get("detail", ""))
+            elif cmd == "scan":
+                _notify_scan(kwargs.get("detail", ""))
+            return
+        except Exception:
+            pass
+    # fallback: subprocess
+    args_list = []
+    for k, v in kwargs.items():
+        if v is not None:
+            args_list += [f"--{k}", str(v)]
+    run_script("notify.py", cmd, *args_list)
+
+
+def _log_trade(**kwargs):
+    """거래 기록: 직접 호출 우선, 실패 시 subprocess fallback."""
+    if _LOGGER_OK:
+        try:
+            _trade_logger.log_trade(kwargs)
+            return
+        except Exception:
+            pass
+    args_list = []
+    for k, v in kwargs.items():
+        if v is not None:
+            args_list += [f"--{k}", str(v)]
+    run_script("trade-logger.py", "log", *args_list)
+
+
+def _close_all_trades(**kwargs):
+    """거래 일괄 청산: 직접 호출 우선, 실패 시 subprocess fallback."""
+    if _LOGGER_OK:
+        try:
+            _trade_logger.close_all_trades(kwargs)
+            return
+        except Exception:
+            pass
+    args_list = []
+    for k, v in kwargs.items():
+        if v is not None:
+            args_list += [f"--{k}", str(v)]
+    run_script("trade-logger.py", "close-all", *args_list)
+
+
+def _add_lesson(**kwargs):
+    """교훈 추가: 직접 호출 우선, 실패 시 subprocess fallback."""
+    if _LOGGER_OK:
+        try:
+            _trade_logger.add_lesson(kwargs)
+            return
+        except Exception:
+            pass
+    args_list = []
+    for k, v in kwargs.items():
+        if v is not None:
+            args_list += [f"--{k}", str(v)]
+    run_script("trade-logger.py", "lesson", *args_list)
 
 # ─── 경로 ───
 HOME = Path.home()
 SCRIPTS_DIR = Path(__file__).parent
 CONFIG_DIR = HOME / "Library/Application Support/tossctl"
-LOG_FILE = CONFIG_DIR / "trade-log.json"
 SIGNAL_CONFIG = CONFIG_DIR / "signal-config.json"
 PROTECTED_FILE = CONFIG_DIR / "protected-stocks.json"
 WATCHLIST_FILE = CONFIG_DIR / "watchlist.json"
@@ -73,6 +187,7 @@ class DaemonStatus(str, Enum):
     PAUSED_MAINTENANCE = "paused_maintenance"  # 점검
     PAUSED_LOSS_LIMIT = "paused_loss_limit"    # 일일 손실 한도
     PAUSED_COOLDOWN = "paused_cooldown"        # 연속 손절 냉각
+    PAUSED_MDD = "paused_mdd"                  # 주간 MDD 한도 도달
     STOPPED = "stopped"
     ERROR = "error"
 
@@ -89,6 +204,9 @@ class DaemonState:
         self.started_at = datetime.now().isoformat()
         self.errors = []  # 최근 에러 로그
         self.reserved_budgets = {}  # {"TSLA": {"usd": 150.0, "krw": 0}, ...}
+        # 시간별 스크리닝: 풀 스캔은 1시간에 1회, 사이클마다 재채점만
+        self.last_scan_time: dict[str, float] = {}   # {"us": timestamp, "kr": timestamp}
+        self.cached_candidates: dict[str, list] = {}  # {"us": [...], "kr": [...]}
         self.load()
 
     def load(self):
@@ -105,6 +223,8 @@ class DaemonState:
                     self.today_trades = d.get("today_trades", 0)
                     self.consecutive_losses = d.get("consecutive_losses", 0)
                 self.reserved_budgets = d.get("reserved_budgets", {})
+                self.last_scan_time = d.get("last_scan_time", {})
+                self.cached_candidates = d.get("cached_candidates", {})
             except Exception:
                 pass
 
@@ -122,6 +242,8 @@ class DaemonState:
             "started_at": self.started_at,
             "errors": self.errors[-10:],
             "reserved_budgets": self.reserved_budgets,
+            "last_scan_time": self.last_scan_time,
+            "cached_candidates": self.cached_candidates,
         }, ensure_ascii=False, indent=2))
 
     def record_error(self, msg: str):
@@ -225,13 +347,15 @@ def _transform_fallback(args_key: tuple, data: dict) -> dict | list | None:
                 continue
             for prod in sec.get("data", {}).get("products", []):
                 mtype = prod.get("marketType", "")
-                mcode = "US" if "US" in mtype else "KR"
+                mcode = "NSQ" if "US" in mtype else "KSP"
                 for item in prod.get("items", []):
                     sym = item.get("stockSymbol") or item.get("stockName", "")
-                    cur = item.get("currentPrice", {})
-                    buy = item.get("purchasePrice", {})
-                    pnl_amt = item.get("profitLossAmount", {})
-                    pnl_rate = item.get("profitLossRate", {})
+                    cur = item.get("currentPrice") or {}
+                    buy = item.get("purchasePrice") or {}
+                    pnl_amt = item.get("profitLossAmount") or {}
+                    pnl_rate = item.get("profitLossRate") or {}
+                    daily_pnl_amt = item.get("dailyProfitLossAmount") or {}
+                    daily_pnl_rate = item.get("dailyProfitLossRate") or {}
                     positions.append({
                         "product_code": item.get("stockCode", ""),
                         "symbol": sym,
@@ -239,12 +363,15 @@ def _transform_fallback(args_key: tuple, data: dict) -> dict | list | None:
                         "market_type": mtype,
                         "market_code": mcode,
                         "quantity": item.get("quantity", 0),
-                        "average_price": (buy or {}).get("krw", 0),
-                        "current_price": (cur or {}).get("krw", 0),
-                        "average_price_usd": (buy or {}).get("usd"),
-                        "current_price_usd": (cur or {}).get("usd"),
-                        "unrealized_pnl": (pnl_amt or {}).get("krw", 0),
-                        "profit_rate": (pnl_rate or {}).get("krw", 0),
+                        "average_price": buy.get("krw", 0),
+                        "current_price": cur.get("krw", 0),
+                        "average_price_usd": buy.get("usd"),
+                        "current_price_usd": cur.get("usd"),
+                        "market_value": (item.get("evaluatedAmount") or {}).get("krw", 0),
+                        "unrealized_pnl": pnl_amt.get("krw", 0),
+                        "profit_rate": pnl_rate.get("krw", 0),
+                        "daily_profit_loss": daily_pnl_amt.get("krw", 0),
+                        "daily_profit_rate": daily_pnl_rate.get("krw", 0),
                     })
         return positions
     return result
@@ -312,6 +439,11 @@ def load_config() -> dict:
         "daily_loss_limit_pct": -2.0, "entry_grades": ["A", "B"],
         "cooldown_after_consecutive_losses": 3,
         "cooldown_minutes": 30,
+        "weekly_mdd_limit_pct": -5.0,
+        "weekly_mdd_min_trades": 3,
+        "vol_target_enabled": False,
+        "vol_target_per_trade_pct": 0.5,
+        "stop_atr_multiple": 2.0,
     }
     if SIGNAL_CONFIG.exists():
         try:
@@ -331,9 +463,8 @@ def send_notification(title: str, msg: str):
         ], timeout=5)
     except Exception:
         pass
-    # Discord 알림
     try:
-        run_script("notify.py", "error", "--message", f"{title}: {msg}")
+        _notify("error", message=f"{title}: {msg}")
     except Exception:
         pass
 
@@ -451,9 +582,10 @@ def check_maintenance() -> bool:
     return False
 
 
-def monitor_positions(state: DaemonState, config: dict) -> tuple:
+def monitor_positions(state: DaemonState, config: dict, positions: list = None) -> tuple:
     """보유 포지션 손절/익절 체크. (매도시그널 리스트, 전체포지션 리스트) 반환."""
-    positions = run_tossctl("portfolio", "positions")
+    if positions is None:
+        positions = run_tossctl("portfolio", "positions")
     if not isinstance(positions, list):
         return [], []
 
@@ -468,14 +600,19 @@ def monitor_positions(state: DaemonState, config: dict) -> tuple:
     return sell_signals, positions
 
 
-def check_risk_gate(state: DaemonState, config: dict) -> bool:
+def check_risk_gate(state: DaemonState, config: dict,
+                     summary: dict = None, positions: list = None,
+                     protected: set = None) -> bool:
     """리스크 게이트 통과 여부 (보호종목은 포지션 한도에서 제외)"""
-    summary = run_tossctl("account", "summary")
-    positions = run_tossctl("portfolio", "positions")
+    if summary is None:
+        summary = run_tossctl("account", "summary")
+    if positions is None:
+        positions = run_tossctl("portfolio", "positions")
     if not isinstance(summary, dict) or summary.get("_error"):
         return False
 
-    protected = load_protected()
+    if protected is None:
+        protected = load_protected()
     active = sum(
         1 for p in positions
         if isinstance(positions, list)
@@ -494,8 +631,39 @@ def check_risk_gate(state: DaemonState, config: dict) -> bool:
     return False
 
 
-def find_buy_candidates(config: dict, market: str = "us") -> list:
-    """스크리너로 매수 후보 탐색 + 기술적 지표 + 추세추종"""
+def _vol_targeted_invest(equity: float, price: float, atr: float,
+                          config: dict) -> tuple[float, str]:
+    """ATR 기반 변동성 타겟팅으로 1차 투입 금액 산출.
+
+    Risk parity 관점: 모든 포지션이 포트폴리오에 동일한 달러 리스크를 기여하도록 사이징.
+
+    target_risk_$ = equity * vol_target_per_trade_pct / 100
+    risk_per_share_$ = atr * stop_atr_multiple
+    shares = target_risk_$ / risk_per_share_$
+    invest_$ = shares * price
+
+    Returns: (invest_amount, source_tag) — source_tag ∈ {"vol_target", "fallback"}
+    """
+    if not config.get("vol_target_enabled", False):
+        return 0.0, "fallback"
+    if not atr or atr <= 0 or not price or price <= 0 or not equity or equity <= 0:
+        return 0.0, "fallback"
+
+    risk_pct = float(config.get("vol_target_per_trade_pct", 0.5))  # 0.5% of equity
+    stop_mult = float(config.get("stop_atr_multiple", 2.0))         # 2x ATR stop
+
+    target_risk_dollars = equity * risk_pct / 100.0
+    risk_per_share = atr * stop_mult
+    if risk_per_share <= 0:
+        return 0.0, "fallback"
+
+    shares = target_risk_dollars / risk_per_share
+    invest_amount = shares * price
+    return max(0.0, invest_amount), "vol_target"
+
+
+def _run_full_scan(config: dict, market: str) -> list:
+    """풀 스크리닝: stock-screener.py scan 실행 (무거운 작업 — yfinance 데이터 수집)"""
     result = run_script("stock-screener.py", "scan",
                         "--source", "all",
                         "--market", market,
@@ -504,28 +672,47 @@ def find_buy_candidates(config: dict, market: str = "us") -> list:
     if not isinstance(result, dict):
         return []
 
-    candidates = result.get("buy_candidates", []) + result.get("watch_list", [])
+    return result.get("buy_candidates", []) + result.get("watch_list", [])
+
+
+def _rescore_candidates(candidates: list, config: dict) -> list:
+    """캐시된 후보 재채점: 기술적 지표 갱신 + signal-engine 재호출로 점수 재계산."""
     entry_grades = config.get("entry_grades", ["A", "B"])
     enriched = []
 
     for c in candidates:
         sym = c.get("symbol", "")
         product_code = c.get("product_code", sym)
+        is_kr = c.get("market_code", "") in ("KSP", "KSQ")
 
-        # 기술적 지표 가져오기 (토스 public API)
         tech = run_script("technical-indicators.py", "analyze",
                           "--symbol", product_code,
-                          "--market", "kr" if c.get("market_code", "") in ("KSP", "KSQ") else "us")
+                          "--market", "kr" if is_kr else "us")
 
-        if isinstance(tech, dict) and not tech.get("_error") and not tech.get("error"):
-            # tech API(tossctl, KRW 기준) 현재가로 덮어쓰기 — yfinance는 USD라 수량 계산 오류 방지
+        tech_ok = isinstance(tech, dict) and not tech.get("_error") and not tech.get("error")
+
+        if tech_ok:
             tech_price = tech.get("current_price", 0)
             if tech_price > 0:
                 c["current_price"] = tech_price
 
-            # 추세추종 판단: 진짜 골든크로스(교차 확인) + 채점 B 이상
-            is_crossover = tech.get("ema", {}).get("is_golden_crossover", False)
+        # tech 결과로 signal-engine 재호출 (점수 갱신: technical 15점 + RSI/BB 보정)
+        rescored = run_script(
+            "signal-engine.py", "evaluate-buy",
+            "--quote", json.dumps(c),
+            "--portfolio", "{}",
+            "--config", json.dumps(config),
+            *(["--tech", json.dumps(tech)] if tech_ok else []),
+        )
+        if isinstance(rescored, dict) and not rescored.get("_error"):
+            # 재채점 결과로 grade/score/breakdown 덮어쓰기
+            for k in ("score", "score_pct", "max_score", "grade", "recommendation",
+                      "regime", "trend_warning", "breakdown", "alphas"):
+                if k in rescored:
+                    c[k] = rescored[k]
 
+        if tech_ok:
+            is_crossover = tech.get("ema", {}).get("is_golden_crossover", False)
             if is_crossover and c.get("grade") in ("A", "B"):
                 c["grade"] = "T"
                 c["strategy"] = "trend_follow"
@@ -533,13 +720,47 @@ def find_buy_candidates(config: dict, market: str = "us") -> list:
                 enriched.append(c)
                 continue
 
-        # 일반 단타 후보 (등급 기반)
         if c.get("grade") in entry_grades:
             c["strategy"] = "daytrade"
-            c["tech"] = tech if isinstance(tech, dict) else None
+            c["tech"] = tech if tech_ok else None
             enriched.append(c)
 
     return enriched
+
+
+def find_buy_candidates(config: dict, market: str, state: DaemonState) -> list:
+    """매수 후보 탐색: 풀 스캔은 1시간 간격, 매 사이클 재채점
+
+    - 풀 스캔 (1시간 1회): stock-screener.py → yfinance 데이터 수집 + 채점
+    - 재채점 (매 사이클): 캐시된 후보에 대해 기술적 지표만 갱신
+    """
+    scan_interval = config.get("scan_interval_minutes", 60) * 60  # 초 단위
+    now = time.time()
+    last_scan = state.last_scan_time.get(market, 0)
+    need_full_scan = (now - last_scan) >= scan_interval
+
+    if need_full_scan:
+        log(f"  [스캔] 풀 스크리닝 실행 ({market.upper()}, 간격 {scan_interval // 60}분)")
+        raw_candidates = _run_full_scan(config, market)
+        # 캐시 저장 (tech 데이터 제외 — 재채점 시 갱신)
+        cache = []
+        for c in raw_candidates:
+            cc = {k: v for k, v in c.items() if k != "tech"}
+            cache.append(cc)
+        state.cached_candidates[market] = cache
+        state.last_scan_time[market] = now
+        log(f"  [스캔] {len(raw_candidates)}종목 캐시 저장")
+    else:
+        remaining = int(scan_interval - (now - last_scan))
+        log(f"  [스캔] 캐시 사용 ({market.upper()}, 다음 풀 스캔까지 {remaining // 60}분 {remaining % 60}초)")
+        raw_candidates = state.cached_candidates.get(market, [])
+
+    if not raw_candidates:
+        return []
+
+    # 매 사이클: 캐시된 후보에 대해 기술적 지표 갱신 + 재채점
+    candidates_copy = copy.deepcopy(raw_candidates)
+    return _rescore_candidates(candidates_copy, config)
 
 
 def _generate_auto_lesson(symbol: str, pnl: float, exit_reason: str, signal: dict) -> str:
@@ -567,83 +788,148 @@ def _generate_auto_lesson(symbol: str, pnl: float, exit_reason: str, signal: dic
     return f"청산 {pnl:.1f}% ({exit_reason})"
 
 
-def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run: bool,
-                grade: str = "A", score: float = 0, reason: str = "",
-                market: str = "us", group_id: str = None, tranche_seq: int = 1) -> bool:
-    """매수 실행 (시장가 주문, 미체결 시 자동 취소)"""
-    tranche_label = f" [T{tranche_seq}]" if tranche_seq > 1 else ""
-    order_type_label = "지정가" if market == "us" else "시장가"
-    log(f"  BUY: {symbol} x{qty} @ ~{price} ({grade}등급, {score}점) [{order_type_label}]{tranche_label}")
+def _kr_tick_size(price: int) -> int:
+    """KRX 호가 단위 반환"""
+    if price < 2000: return 1
+    if price < 5000: return 5
+    if price < 20000: return 10
+    if price < 50000: return 50
+    if price < 200000: return 100
+    if price < 500000: return 500
+    return 1000
 
-    # trade-logger 공통 인자
-    _logger_extra = []
-    if group_id:
-        _logger_extra += ["--group-id", group_id]
-    if tranche_seq:
-        _logger_extra += ["--tranche-seq", str(tranche_seq)]
+def _kr_ceil_price(price: int) -> int:
+    """KR 호가 단위로 올림 (매수용)"""
+    tick = _kr_tick_size(price)
+    return ((price + tick - 1) // tick) * tick
 
-    if dry_run:
-        log(f"  [DRY RUN] 주문 스킵")
-        run_script("trade-logger.py", "log",
-                    "--symbol", symbol, "--side", "buy",
-                    "--qty", str(qty), "--price", str(price),
-                    "--grade", grade, "--score", str(score),
-                    "--reason", reason or "autotrade-dry-run",
-                    "--mode", "dry-run",
-                    *_logger_extra)
-        state.today_trades += 1
-        return True
+def _kr_floor_price(price: int) -> int:
+    """KR 호가 단위로 내림 (매도용)"""
+    tick = _kr_tick_size(price)
+    return (price // tick) * tick
 
-    # 주문 실행 (US: 지정가 +1% 슬리피지, KR: 시장가)
-    if market == "us":
-        limit_price = int(price * 1.01)  # +1% 슬리피지: 현재가보다 높게 걸어 즉시 체결
+
+# ─── Price Chase Execution ───
+# 전문 펀드 방식: 단번에 큰 슬리피지 지르지 말고, 작게 시작해서 단계적으로 키움.
+# 평온한 시장: 1차(0.3~0.5%)에서 체결. 빠른 시장: 3차(1.0~1.5%)까지 escalate.
+_CHASE_STEPS_US = [0.003, 0.006, 0.010]   # +0.3% → +0.6% → +1.0%
+_CHASE_STEPS_KR = [0.005, 0.010, 0.015]   # +0.5% → +1.0% → +1.5%
+
+
+def _place_with_chase(symbol: str, side: str, qty, base_price: float, market: str,
+                       timeout_per_attempt: int = 20, is_sell: bool = False):
+    """점진적 가격 추적 실행.
+
+    Returns:
+        (filled_price, order_id, intended_price) — 체결 성공 시
+        (None, None, last_intended) — 3차까지 미체결 (호출자가 취소 및 에러 처리)
+        filled_price=-1 — 체결은 됐으나 가격 조회 실패 (sell 경로에서만)
+    """
+    steps = _CHASE_STEPS_US if market == "us" else _CHASE_STEPS_KR
+    sign = -1 if is_sell else +1  # 매수=+, 매도=-
+    last_intended = None
+
+    for attempt_idx, step in enumerate(steps, 1):
+        # 지정가 계산
+        raw_price = base_price * (1 + sign * step)
+        if market == "kr":
+            if is_sell:
+                limit_price = _kr_floor_price(int(raw_price))
+            else:
+                limit_price = _kr_ceil_price(int(raw_price))
+        else:
+            limit_price = int(raw_price)
+        last_intended = limit_price
+
+        log(f"  [CHASE {attempt_idx}/{len(steps)}] {side.upper()} {symbol} @ {limit_price} "
+            f"(슬리피지 {step*100:.2f}%)")
+
         order_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
-                      "--symbol", symbol, "--side", "buy",
+                      "--symbol", symbol, "--side", side,
                       "--qty", str(qty), "--price", str(limit_price),
                       "--market", market]
-    else:
-        order_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
-                      "--symbol", symbol, "--side", "buy",
-                      "--qty", str(qty), "--type", "market",
-                      "--market", market]
+        result = subprocess.run(order_args, capture_output=True, text=True, timeout=30, env=TOSS_ENV)
 
-    result = subprocess.run(
-        order_args, capture_output=True, text=True, timeout=30, env=TOSS_ENV
-    )
+        if result.returncode != 0:
+            err_msg = (result.stderr or result.stdout or "unknown").strip()[:150]
+            log(f"    주문 실패 (attempt {attempt_idx}): {err_msg}")
+            # 주문 자체 실패는 다음 step 시도 (세션 문제면 모두 실패하고 호출자가 에러 처리)
+            if attempt_idx == len(steps):
+                return None, None, last_intended
+            continue
 
-    if result.returncode == 0:
-        # 주문 접수 후 체결 확인 (최대 60초, 10초 간격)
-        order_info = {}
         try:
             order_info = json.loads(result.stdout)
         except Exception:
-            pass
+            order_info = {}
         order_id = order_info.get("order_id", "") or order_info.get("raw", {}).get("orderId", "")
 
-        filled_price = _wait_for_fill(symbol, order_id, timeout=60)
-        if filled_price:
-            log(f"  BUY FILLED: {symbol} @ {filled_price}")
-            run_script("notify.py", "trade", "--symbol", symbol, "--side", "buy",
-                        "--price", str(filled_price), "--qty", str(qty),
-                        "--grade", grade, "--score", str(score), "--strategy", reason)
-            run_script("trade-logger.py", "log",
-                        "--symbol", symbol, "--side", "buy",
-                        "--qty", str(qty), "--price", str(filled_price),
-                        "--grade", grade, "--score", str(score),
-                        "--reason", reason or "autotrade",
-                        "--mode", "autotrade",
-                        *_logger_extra)
-            state.today_trades += 1
-            return True
+        # 체결 대기
+        if is_sell:
+            filled_price = _wait_for_sell_fill(symbol, order_id, timeout=timeout_per_attempt)
         else:
-            # 미체결 → 자동 취소
-            log(f"  BUY TIMEOUT: {symbol} 60초 미체결 → 취소 시도")
-            _cancel_pending(symbol, order_id)
-            run_script("notify.py", "error", "--message", f"{symbol} 매수 미체결 → 자동 취소")
-            return False
+            filled_price = _wait_for_fill(symbol, order_id, timeout=timeout_per_attempt)
+
+        if filled_price is not None:
+            # 체결됨 (또는 -1 = 체결 확인됐지만 가격 불명)
+            if filled_price != -1 and filled_price > 0:
+                log(f"    CHASE 체결: {symbol} @ {filled_price} (시도 {attempt_idx})")
+            return filled_price, order_id, last_intended
+
+        # 미체결 → 취소하고 다음 step으로
+        log(f"    미체결 {timeout_per_attempt}초 → 취소 후 다음 시도")
+        _cancel_pending(symbol, order_id)
+
+    return None, None, last_intended
+
+
+def execute_buy(symbol: str, price: float, qty: int, state: DaemonState, dry_run: bool,
+                grade: str = "A", score: float = 0, reason: str = "",
+                market: str = "us", group_id: str = None, tranche_seq: int = 1,
+                screener_result_id: int = None) -> bool:
+    """매수 실행 (시장가 주문, 미체결 시 자동 취소)"""
+    tranche_label = f" [T{tranche_seq}]" if tranche_seq > 1 else ""
+    order_type_label = "지정가"
+    log(f"  BUY: {symbol} x{qty} @ ~{price} ({grade}등급, {score}점) [{order_type_label}]{tranche_label}")
+
+    # trade-logger 공통 인자
+    _logger_kw = {}
+    if group_id:
+        _logger_kw["group-id"] = group_id
+    if tranche_seq:
+        _logger_kw["tranche-seq"] = str(tranche_seq)
+    if screener_result_id:
+        _logger_kw["screener-result-id"] = str(screener_result_id)
+
+    if dry_run:
+        log(f"  [DRY RUN] 주문 스킵")
+        _log_trade(symbol=symbol, side="buy", qty=str(qty), price=str(price),
+                   grade=grade, score=str(score), reason=reason or "autotrade-dry-run",
+                   mode="dry-run", **_logger_kw)
+        state.today_trades += 1
+        return True
+
+    # 주문 실행 (price chase: 3단계 점진 슬리피지로 최적 체결 추구)
+    filled_price, order_id, intended = _place_with_chase(
+        symbol, "buy", qty, price, market, timeout_per_attempt=20, is_sell=False
+    )
+
+    if filled_price and filled_price > 0:
+        log(f"  BUY FILLED: {symbol} @ {filled_price} (의도가 {intended}, 실슬리피지 "
+            f"{((filled_price - price) / price * 100):+.2f}%)")
+        _notify("trade", symbol=symbol, side="buy", price=str(filled_price),
+                qty=str(qty), grade=grade, score=str(score), strategy=reason)
+        # TCA: intended_price를 reason 필드에 인코딩 (trade-logger가 그대로 보존)
+        _log_trade(symbol=symbol, side="buy", qty=str(qty), price=str(filled_price),
+                   grade=grade, score=str(score), reason=reason or "autotrade",
+                   mode="autotrade", **{"intended-price": str(intended)}, **_logger_kw)
+        state.today_trades += 1
+        return True
     else:
-        log(f"  BUY FAILED: {result.stderr[:200]}")
-        state.record_error(f"BUY {symbol} failed: {result.stderr[:100]}")
+        # 3차까지 모두 미체결 → 에러
+        log(f"  BUY TIMEOUT: {symbol} chase 3차 전부 미체결")
+        _notify("error", message=f"{symbol} 매수 chase 실패 → 스킵")
+        state.record_error(f"BUY {symbol} chase failed (intended={intended})")
         return False
 
 
@@ -659,7 +945,8 @@ def _wait_for_fill(symbol: str, order_id: str, timeout: int = 60) -> float | Non
         if isinstance(positions, list):
             for p in positions:
                 p_sym = p.get("symbol", p.get("product_code", ""))
-                if p_sym == symbol and p.get("quantity", 0) > 0:
+                # KR 종목: 포지션에서 A067310 형태, 주문은 067310 형태
+                if (p_sym == symbol or p_sym == f"A{symbol}" or p_sym.lstrip("A") == symbol) and p.get("quantity", 0) > 0:
                     price_val = (p.get("average_price") or p.get("avg_price")
                                  or p.get("purchase_price") or p.get("current_price") or 1)
                     return float(price_val)
@@ -675,32 +962,40 @@ def _wait_for_fill(symbol: str, order_id: str, timeout: int = 60) -> float | Non
     return None
 
 
-def _wait_for_sell_fill(symbol: str, order_id: str, timeout: int = 60) -> bool:
-    """매도 체결 대기. 포지션이 사라지면 True, 타임아웃이면 False."""
+def _wait_for_sell_fill(symbol: str, order_id: str, timeout: int = 60) -> float | None:
+    """매도 체결 대기. 체결되면 체결가 반환, 타임아웃이면 None."""
     elapsed = 0
     interval = 10
     while elapsed < timeout:
         time.sleep(interval)
         elapsed += interval
-        # 포지션에서 해당 종목이 사라졌는지 확인
-        positions = run_tossctl("portfolio", "positions")
-        if isinstance(positions, list):
-            found = any(
-                p.get("symbol", p.get("product_code", "")) == symbol and p.get("quantity", 0) > 0
-                for p in positions
-            )
-            if not found:
-                return True
-        # order show로 직접 확인
+        # order show로 체결가 확인
         if order_id:
             order = run_tossctl("order", "show", order_id)
             if isinstance(order, dict):
                 status = order.get("status", "").lower()
                 if status in ("filled", "executed", "complete"):
-                    return True
+                    return float(order.get("filled_price", order.get("price", 0)) or 0)
                 if status in ("cancelled", "rejected", "expired"):
-                    return False
-    return False
+                    return None
+        # 포지션에서 해당 종목이 사라졌는지 확인
+        positions = run_tossctl("portfolio", "positions")
+        if isinstance(positions, list):
+            def _sym_match(p_sym, target):
+                return p_sym == target or p_sym == f"A{target}" or p_sym.lstrip("A") == target
+            found = any(
+                _sym_match(p.get("symbol", p.get("product_code", "")), symbol) and p.get("quantity", 0) > 0
+                for p in positions
+            )
+            if not found:
+                # 체결됐지만 체결가를 못 가져온 경우 — 체결 내역에서 조회
+                completed = run_tossctl("orders", "completed", "--market", "all")
+                if isinstance(completed, list):
+                    for o in completed:
+                        if _sym_match(o.get("symbol", o.get("product_code", "")), symbol):
+                            return float(o.get("filled_price", o.get("price", 0)) or 0)
+                return -1  # 체결 확인됐지만 가격 불명 (호출자가 fallback 처리)
+    return None
 
 
 def _cancel_pending(symbol: str, order_id: str):
@@ -719,7 +1014,7 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool,
                  market: str = "us") -> bool:
     """매도 실행 (시장가 주문, 미체결 시 자동 취소)"""
     price = signal.get("current_price", 0)
-    order_type_label = "지정가" if market == "us" else "시장가"
+    order_type_label = "지정가"
     log(f"  SELL: {symbol} @ ~{price} ({signal.get('action', '')}) [{order_type_label}]")
 
     if dry_run:
@@ -750,84 +1045,63 @@ def execute_sell(symbol: str, signal: dict, state: DaemonState, dry_run: bool,
 
     qty = int(pos["quantity"]) if pos["quantity"] == int(pos["quantity"]) else pos["quantity"]
 
-    # 주문 실행 (US: 지정가 -1% 슬리피지, KR: 시장가)
-    if market == "us":
-        limit_price = int(price * 0.99)  # -1% 슬리피지: 현재가보다 낮게 걸어 즉시 체결
-        sell_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
-                     "--symbol", symbol, "--side", "sell",
-                     "--qty", str(qty), "--price", str(limit_price),
-                     "--market", market]
-    else:
-        sell_args = ["bash", str(SCRIPTS_DIR / "quick-order.sh"),
-                     "--symbol", symbol, "--side", "sell",
-                     "--qty", str(qty), "--type", "market",
-                     "--market", market]
-
-    result = subprocess.run(
-        sell_args,
-        capture_output=True, text=True, timeout=30, env=TOSS_ENV
+    # 주문 실행 (price chase: 3단계 점진 슬리피지)
+    filled_price, order_id, intended = _place_with_chase(
+        symbol, "sell", qty, price, market, timeout_per_attempt=20, is_sell=True
     )
 
-    if result.returncode == 0:
-        # 체결 확인 (최대 60초)
-        order_info = {}
-        try:
-            order_info = json.loads(result.stdout)
-        except Exception:
-            pass
-        order_id = order_info.get("order_id", "") or order_info.get("raw", {}).get("orderId", "")
-
-        filled = _wait_for_sell_fill(symbol, order_id, timeout=60)
-        if not filled:
-            log(f"  SELL TIMEOUT: {symbol} 60초 미체결 → 취소 시도")
-            _cancel_pending(symbol, order_id)
-            run_script("notify.py", "error", "--message", f"{symbol} 매도 미체결 → 자동 취소")
-            return False
-        log(f"  SELL SUCCESS: {symbol}")
-        pnl = signal.get("profit_rate", 0)
-        state.today_pnl += pnl
-        exit_reason = signal.get("action", "MANUAL")
-        run_script("notify.py", "trade", "--symbol", symbol, "--side", "sell",
-                    "--price", str(price), "--qty", str(qty),
-                    "--pnl_pct", str(round(pnl, 2)), "--exit_reason", exit_reason)
-
-        # 거래 기록 (분할매수 → close-all로 전체 트랜치 일괄 청산)
-        close_result = run_script("trade-logger.py", "close-all",
-                    "--symbol", symbol,
-                    "--exit-price", str(price),
-                    "--exit-reason", exit_reason)
-        if isinstance(close_result, dict) and close_result.get("_error"):
-            state.record_error(f"SELL {symbol} 성공했지만 기록 실패: {close_result['_error']}")
-        elif isinstance(close_result, list) and len(close_result) == 0:
-            state.record_error(f"SELL {symbol} 성공했지만 DB에 open 트레이드 없음")
-
-        # 트랜치 플랜 정리 + 예약 예산 해제
-        try:
-            complete_tranche_plan_by_symbol(symbol)
-        except Exception:
-            pass
-        state.reserved_budgets.pop(symbol, None)
-
-        # 자동 교훈 생성
-        auto_lesson = _generate_auto_lesson(symbol, pnl, exit_reason, signal)
-        if auto_lesson:
-            lesson_score = 7 if pnl > 0 else 3
-            run_script("trade-logger.py", "lesson",
-                        "--symbol", symbol,
-                        "--lesson", auto_lesson,
-                        "--score", str(lesson_score))
-
-        if pnl < 0:
-            state.consecutive_losses += 1
-        else:
-            state.consecutive_losses = 0
-
-        state.today_trades += 1
-        return True
-    else:
-        log(f"  SELL FAILED: {result.stderr[:200]}")
-        state.record_error(f"SELL {symbol} failed: {result.stderr[:100]}")
+    if filled_price is None:
+        log(f"  SELL TIMEOUT: {symbol} chase 3차 전부 미체결")
+        _notify("error", message=f"{symbol} 매도 chase 실패")
+        state.record_error(f"SELL {symbol} chase failed (intended={intended})")
         return False
+
+    # 실제 체결가 사용 (가져올 수 없으면 시세 기준 fallback)
+    if filled_price > 0:
+        actual_price = filled_price
+    else:
+        actual_price = price
+        log(f"  SELL WARNING: {symbol} 체결가 조회 불가 → 시세({price}) 기준 기록")
+    log(f"  SELL SUCCESS: {symbol} @ {actual_price} (의도가 {intended}, 실슬리피지 "
+        f"{((actual_price - price) / price * 100):+.2f}%)")
+    # 실제 체결가 기준 PnL 계산
+    entry_price = signal.get("average_price", 0)
+    if entry_price and actual_price > 0:
+        pnl = round(((actual_price - entry_price) / entry_price - 0.002) * 100, 2)
+    else:
+        pnl = signal.get("profit_rate", 0)
+    state.today_pnl += pnl
+    exit_reason = signal.get("action", "MANUAL")
+    _notify("trade", symbol=symbol, side="sell", price=str(actual_price),
+            qty=str(qty), pnl_pct=str(round(pnl, 2)), exit_reason=exit_reason)
+
+    # 거래 기록 (분할매수 → close-all로 전체 트랜치 일괄 청산)
+    _close_all_trades(symbol=symbol, **{
+        "exit-price": str(actual_price),
+        "exit-reason": exit_reason,
+        "exit-intended-price": str(intended) if intended else "",
+    })
+
+    # 트랜치 플랜 정리 + 예약 예산 해제
+    try:
+        complete_tranche_plan_by_symbol(symbol)
+    except Exception:
+        pass
+    state.reserved_budgets.pop(symbol, None)
+
+    # 자동 교훈 생성
+    auto_lesson = _generate_auto_lesson(symbol, pnl, exit_reason, signal)
+    if auto_lesson:
+        lesson_score = 7 if pnl > 0 else 3
+        _add_lesson(symbol=symbol, lesson=auto_lesson, score=str(lesson_score))
+
+    if pnl < 0:
+        state.consecutive_losses += 1
+    else:
+        state.consecutive_losses = 0
+
+    state.today_trades += 1
+    return True
 
 
 # ─── 분할매수 트랜치 처리 ───
@@ -996,11 +1270,13 @@ def _execute_tranche(state: DaemonState, config: dict, plan: dict,
 
     state.reserved_budgets[symbol] = reserved
 
+    sr_id = find_latest_screener_result_id(symbol) if _DB_OK else None
     success = execute_buy(
         symbol, order_price, qty, state, dry_run,
         grade=plan.get("grade", ""), score=plan.get("score", 0),
         reason=f"tranche_t{next_tranche}:{plan.get('entry_reason', '')}",
         market=market, group_id=group_id, tranche_seq=next_tranche,
+        screener_result_id=sr_id,
     )
 
     if success:
@@ -1047,14 +1323,14 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         prev = state.status
         state.status = DaemonStatus.PAUSED_SESSION
         log("  세션 만료! 재로그인 필요.")
-        run_script("notify.py", "session", "--status", "expired")
+        _notify("session", status="expired")
         if prev != DaemonStatus.PAUSED_SESSION:
-            run_script("notify.py", "daemon", "--status", "paused_session", "--detail", "세션 만료로 거래 중단")
+            _notify("daemon", status="paused_session", detail="세션 만료로 거래 중단")
         return False
 
     # 세션이 복원된 경우 (이전에 만료였다면)
     if state.status == DaemonStatus.PAUSED_SESSION:
-        run_script("notify.py", "session", "--status", "restored")
+        _notify("session", status="restored")
 
     # 2. 점검 체크
     if check_maintenance():
@@ -1062,8 +1338,8 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         state.status = DaemonStatus.PAUSED_MAINTENANCE
         log("  시스템 점검 중. 대기.")
         if prev != DaemonStatus.PAUSED_MAINTENANCE:
-            run_script("notify.py", "session", "--status", "maintenance")
-            run_script("notify.py", "daemon", "--status", "paused_maintenance", "--detail", "토스증권 시스템 점검 중")
+            _notify("session", status="maintenance")
+            _notify("daemon", status="paused_maintenance", detail="토스증권 시스템 점검 중")
         return False
 
     # 3. 장 시간 체크 (auto 모드: 열려 있는 시장 자동 판별)
@@ -1080,24 +1356,46 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
             return True
         effective_market = market
 
-    # 4. 일일 손실 한도 체크 (데몬 운용 금액 기준, 보호종목 무관)
-    total_asset = 0
-    orderable_krw = 0
+    # 4. 데이터 1회 조회 (사이클 전체에서 캐시)
     summary = run_tossctl("account", "summary")
+    positions = run_tossctl("portfolio", "positions")
+    if not isinstance(positions, list):
+        positions = []
+
+    # 일일 손실 한도 체크
     if isinstance(summary, dict) and not summary.get("_error"):
-        total_asset = summary.get("total_asset_amount", 0)
-        orderable_krw = summary.get("orderable_amount_krw", 0)
-    # today_pnl은 퍼센트 누적값 (예: -3.0 = -3%). 직접 한도와 비교.
-    if True:
-        loss_pct = state.today_pnl  # 이미 퍼센트 단위
-        limit = config.get("daily_loss_limit_pct", -2.0)
-        if loss_pct <= limit:
-            state.status = DaemonStatus.PAUSED_LOSS_LIMIT
-            log(f"  일일 손실 한도 도달: {loss_pct:.2f}% (한도: {limit}%)")
-            send_notification("거래 중단", f"일일 손실 {loss_pct:.1f}%로 한도 도달")
-            run_script("notify.py", "daemon", "--status", "paused_loss_limit",
-                        "--detail", f"일일 손실 {loss_pct:.1f}% (한도 {limit}%)")
-            return False
+        pass  # summary 유효
+    loss_pct = state.today_pnl
+    limit = config.get("daily_loss_limit_pct", -2.0)
+    if loss_pct <= limit:
+        state.status = DaemonStatus.PAUSED_LOSS_LIMIT
+        log(f"  일일 손실 한도 도달: {loss_pct:.2f}% (한도: {limit}%)")
+        send_notification("거래 중단", f"일일 손실 {loss_pct:.1f}%로 한도 도달")
+        _notify("daemon", status="paused_loss_limit",
+                detail=f"일일 손실 {loss_pct:.1f}% (한도 {limit}%)")
+        return False
+
+    # 4.5 주간 MDD 서킷 브레이커 (최근 7일 Max Drawdown)
+    wmdd_limit = config.get("weekly_mdd_limit_pct", -5.0)
+    wmdd_min_trades = config.get("weekly_mdd_min_trades", 3)
+    if _PERF_OK and _perf is not None and wmdd_limit is not None:
+        try:
+            wrows = _perf.fetch_daily_returns(days=7)
+            total_n = sum(r.get("n_trades", 0) for r in wrows)
+            if total_n >= wmdd_min_trades:
+                wmdd = _perf.max_drawdown(wrows)
+                mdd_pct = wmdd.get("mdd_pct", 0.0) or 0.0
+                if mdd_pct <= wmdd_limit:
+                    state.status = DaemonStatus.PAUSED_MDD
+                    log(f"  주간 MDD 한도 도달: {mdd_pct:.2f}% (한도: {wmdd_limit}%, "
+                        f"peak {wmdd.get('peak_date')} → trough {wmdd.get('trough_date')})")
+                    send_notification("MDD 한도",
+                        f"주간 MDD {mdd_pct:.2f}% (한도 {wmdd_limit}%). 신규 매수 중단")
+                    _notify("daemon", status="paused_mdd",
+                            detail=f"주간 MDD {mdd_pct:.2f}% (한도 {wmdd_limit}%)")
+                    return False
+        except Exception as e:
+            state.record_error(f"MDD 체크 실패: {e}")
 
     # 5. 연속 손절 냉각
     cooldown_limit = config.get("cooldown_after_consecutive_losses", 3)
@@ -1106,32 +1404,42 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         cooldown_min = config.get("cooldown_minutes", 30)
         log(f"  연속 {state.consecutive_losses}회 손절. {cooldown_min}분 냉각.")
         send_notification("냉각기", f"연속 {state.consecutive_losses}회 손절")
-        run_script("notify.py", "daemon", "--status", "paused_cooldown",
-                    "--detail", f"연속 {state.consecutive_losses}회 손절. {cooldown_min}분 대기")
+        _notify("daemon", status="paused_cooldown",
+                detail=f"연속 {state.consecutive_losses}회 손절. {cooldown_min}분 대기")
         time.sleep(cooldown_min * 60)
         state.consecutive_losses = 0
         state.status = DaemonStatus.RUNNING
-        run_script("notify.py", "daemon", "--status", "running", "--detail", "냉각기 종료. 거래 재개")
+        _notify("daemon", status="running", detail="냉각기 종료. 거래 재개")
 
-    # 6. 보유 포지션 손절/익절 체크
-    sell_signals, positions = monitor_positions(state, config)
+    # 6. 보유 포지션 손절/익절 체크 (캐시된 positions 사용)
+    sell_signals, positions = monitor_positions(state, config, positions)
+
+    # 6.1 MFE/MAE 갱신 (보유 중 최대수익/최대손실 추적)
+    if _DB_OK and isinstance(positions, list):
+        for p in positions:
+            sym = p.get("symbol", p.get("product_code", ""))
+            pr = p.get("profit_rate")
+            if sym and pr is not None:
+                try:
+                    update_trade_mfe_mae(sym, float(pr))
+                except Exception:
+                    pass
+
     for sig in sell_signals:
         sym = sig.get("symbol", "")
         if sym in protected:
             log(f"  {sym} 보호종목 → 매도 스킵")
             continue
         # 시그널 감지 알림 (매도 전)
-        run_script("notify.py", "signal", "--symbol", sym,
-                    "--action", sig.get("action", ""),
-                    "--reason", sig.get("reason", ""),
-                    "--profit_rate", str(sig.get("profit_rate", 0)))
+        _notify("signal", symbol=sym, action=sig.get("action", ""),
+                reason=sig.get("reason", ""), profit_rate=str(sig.get("profit_rate", 0)))
         # 한국 종목인지 판별
         sell_market = "kr" if (sym.isdigit() and len(sym) == 6) or sym.startswith("A") else "us"
         if execute_sell(sym, sig, state, dry_run, market=sell_market):
             _cycle_sells += 1
 
-    # 7. 리스크 게이트
-    if not check_risk_gate(state, config):
+    # 7. 리스크 게이트 (캐시된 summary/positions/protected 사용)
+    if not check_risk_gate(state, config, summary=summary, positions=positions, protected=protected):
         log("  리스크 게이트 미통과 → 신규 매수 스킵")
         state.status = DaemonStatus.RUNNING
         return True
@@ -1143,16 +1451,15 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
         except Exception as e:
             state.record_error(f"트랜치 처리 오류: {e}")
 
-    # 8. 매수 후보 탐색
-    candidates = find_buy_candidates(config, effective_market)
+    # 8. 매수 후보 탐색 (풀 스캔 1시간 간격, 매 사이클 재채점)
+    candidates = find_buy_candidates(config, effective_market, state)
 
     # 스캔/채점 결과 알림
     if candidates:
         top3 = candidates[:3]
         scan_detail = ", ".join(f"{c.get('symbol','')}({c.get('grade','?')}/{c.get('score_pct',0)}%)" for c in top3)
         log(f"  스캔 결과: {len(candidates)}종목 — {scan_detail}")
-        run_script("notify.py", "scan", "--detail",
-                   f"{effective_market.upper()} {len(candidates)}종목 발견: {scan_detail}")
+        _notify("scan", detail=f"{effective_market.upper()} {len(candidates)}종목 발견: {scan_detail}")
     else:
         log("  매수 후보 없음")
         state.status = DaemonStatus.RUNNING
@@ -1238,13 +1545,24 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
                 price_usd = price if price < 5000 else price / fx_rate
                 price_krw = int(price_usd * fx_rate)
 
-                remaining_us = slots_us - bought_us
-                per_slot_usd = orderable_usd / remaining_us if remaining_us > 0 else 0
-                full_invest_usd = min(per_slot_usd,
-                                      orderable_usd * config.get("max_position_pct", 30) / 100)
+                max_pct = config.get("max_position_pct", 100) / 100
+                cap_invest_usd = min(orderable_usd, orderable_usd * max_pct)
+
+                # ATR 변동성 타겟팅 (risk parity)
+                atr_val = (c.get("tech") or {}).get("atr", {}).get("value", 0)
+                vol_invest_usd, vol_src = _vol_targeted_invest(
+                    equity=orderable_usd, price=price_usd, atr=atr_val, config=config)
+
+                if vol_src == "vol_target" and vol_invest_usd > 0:
+                    # vol target 결과를 max_position_pct 한도로 상한 적용
+                    full_invest_usd = min(vol_invest_usd, cap_invest_usd)
+                    log(f"  [VolTgt] {sym} ATR=${atr_val:.2f} → 타겟 ${vol_invest_usd:.2f} "
+                        f"(상한 ${cap_invest_usd:.2f}, 적용 ${full_invest_usd:.2f})")
+                else:
+                    full_invest_usd = cap_invest_usd
 
                 if full_invest_usd < price_usd:
-                    log(f"  {sym} USD 잔고 부족 (슬롯당 ${per_slot_usd:.2f} < ${price_usd:.2f}) → 스킵")
+                    log(f"  {sym} USD 잔고 부족 (${orderable_usd:.2f} < ${price_usd:.2f}) → 스킵")
                     continue
 
                 # 분할매수: 1차 트랜치만 매수, 나머지 예약
@@ -1269,11 +1587,13 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
                     group_id = f"{sym}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
                 _cycle_buys_attempted += 1
+                sr_id = find_latest_screener_result_id(sym) if _DB_OK else None
                 if execute_buy(sym, price_krw, qty, state, dry_run,
                                grade=c.get("grade", "?"), score=c.get("score", 0),
                                reason=f"{strategy}:{c.get('recommendation', '')}",
                                market=buy_market,
-                               group_id=group_id, tranche_seq=1):
+                               group_id=group_id, tranche_seq=1,
+                               screener_result_id=sr_id):
                     orderable_usd -= cost_usd
                     current_positions.add(sym)
                     current_us.add(sym)
@@ -1306,13 +1626,23 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
                             state.record_error(f"트랜치 플랜 생성 실패: {e}")
             else:
                 # --- KR: 원화 예산으로 계산 ---
-                remaining_kr = slots_kr - bought_kr
-                per_slot_krw = orderable_krw / remaining_kr if remaining_kr > 0 else 0
-                full_invest_krw = min(per_slot_krw,
-                                      orderable_krw * config.get("max_position_pct", 30) / 100)
+                max_pct = config.get("max_position_pct", 100) / 100
+                cap_invest_krw = min(orderable_krw, orderable_krw * max_pct)
+
+                # ATR 변동성 타겟팅 (risk parity)
+                atr_val = (c.get("tech") or {}).get("atr", {}).get("value", 0)
+                vol_invest_krw, vol_src = _vol_targeted_invest(
+                    equity=orderable_krw, price=price, atr=atr_val, config=config)
+
+                if vol_src == "vol_target" and vol_invest_krw > 0:
+                    full_invest_krw = min(vol_invest_krw, cap_invest_krw)
+                    log(f"  [VolTgt] {sym} ATR={atr_val:,.0f}원 → 타겟 {vol_invest_krw:,.0f}원 "
+                        f"(상한 {cap_invest_krw:,.0f}원, 적용 {full_invest_krw:,.0f}원)")
+                else:
+                    full_invest_krw = cap_invest_krw
 
                 if full_invest_krw < price:
-                    log(f"  {sym} 원화 잔고 부족 (슬롯당 {per_slot_krw:,.0f}원 < {price:,.0f}원) → 스킵")
+                    log(f"  {sym} 원화 잔고 부족 ({orderable_krw:,.0f}원 < {price:,.0f}원) → 스킵")
                     continue
 
                 # 분할매수: 1차 트랜치만 매수, 나머지 예약
@@ -1336,11 +1666,13 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
                     group_id = f"{sym}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
                 _cycle_buys_attempted += 1
+                sr_id = find_latest_screener_result_id(sym) if _DB_OK else None
                 if execute_buy(sym, price, qty, state, dry_run,
                                grade=c.get("grade", "?"), score=c.get("score", 0),
                                reason=f"{strategy}:{c.get('recommendation', '')}",
                                market=buy_market,
-                               group_id=group_id, tranche_seq=1):
+                               group_id=group_id, tranche_seq=1,
+                               screener_result_id=sr_id):
                     orderable_krw -= cost_krw
                     current_positions.add(sym)
                     current_kr.add(sym)
@@ -1378,11 +1710,10 @@ def run_cycle(state: DaemonState, config: dict, dry_run: bool, market: str):
 
     state.status = DaemonStatus.RUNNING
 
-    # 사이클 DB 기록
+    # 사이클 DB 기록 (캐시된 positions 사용 — 매수/매도 후 수량은 다음 사이클에서 갱신)
     try:
-        positions_now = run_tossctl("portfolio", "positions")
-        pos_count = len([p for p in (positions_now or [])
-                         if p.get("quantity", 0) > 0]) if isinstance(positions_now, list) else 0
+        pos_count = len([p for p in positions
+                         if p.get("quantity", 0) > 0]) if isinstance(positions, list) else 0
         insert_cycle({
             "cycle_num":          state.cycle_count,
             "market":             effective_market,

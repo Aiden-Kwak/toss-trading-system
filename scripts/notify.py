@@ -48,6 +48,10 @@ DAEMON_STATE_FILE = CONFIG_DIR / "daemon-state.json"
 # 모드: "live" 또는 "dry-run" — 데몬에서 설정하거나 CLI --mode로 전달
 _MODE = os.environ.get("TOSS_TRADE_MODE", "live")
 
+def _set_mode(mode: str):
+    global _MODE
+    _MODE = mode
+
 
 def _footer() -> dict:
     label = "DRY RUN" if _MODE == "dry-run" else "LIVE"
@@ -145,6 +149,12 @@ def notify_daily_report(report: dict):
             "timestamp": datetime.utcnow().isoformat(), "footer": _footer()}])
 
 
+def notify_scan(detail: str = ""):
+    """스캔 결과 알림"""
+    _send([{"title": "🔍 스캔 결과", "description": detail,
+            "color": BLUE, "timestamp": datetime.utcnow().isoformat(), "footer": _footer()}])
+
+
 def notify_daemon_status(status: str, detail: str = ""):
     """데몬 상태 변경 알림"""
     icons = {"running": "🟢", "paused_session": "🔴", "paused_maintenance": "🔧",
@@ -159,10 +169,22 @@ def notify_daemon_status(status: str, detail: str = ""):
 
 # ─── 조회 명령 (Discord에 결과 전송) ───
 
+def _load_trades(status="all"):
+    """DB에서 거래 조회, 실패 시 JSON fallback"""
+    try:
+        import sys as _sys; _sys.path.insert(0, str(Path(__file__).parent))
+        from db import query_trades
+        return query_trades(status=status, limit=500)
+    except Exception:
+        trades = json.loads(LOG_FILE.read_text()) if LOG_FILE.exists() else []
+        if status != "all":
+            return [t for t in trades if t.get("status") == status]
+        return trades
+
+
 def query_positions():
     """현재 보유 포지션을 Discord에 전송"""
-    trades = json.loads(LOG_FILE.read_text()) if LOG_FILE.exists() else []
-    open_trades = [t for t in trades if t.get("status") == "open"]
+    open_trades = _load_trades(status="open")
 
     if not open_trades:
         _send([{"title": "📋 보유 포지션", "description": "현재 보유 중인 포지션이 없습니다.",
@@ -186,8 +208,7 @@ def query_positions():
 
 def query_recent_trades(count: int = 5):
     """최근 청산 거래를 Discord에 전송"""
-    trades = json.loads(LOG_FILE.read_text()) if LOG_FILE.exists() else []
-    closed = [t for t in trades if t.get("status") == "closed"]
+    closed = _load_trades(status="closed")
     recent = closed[-count:][::-1]  # 최신순
 
     if not recent:
@@ -213,7 +234,7 @@ def query_recent_trades(count: int = 5):
 
 def query_today():
     """오늘 거래 요약을 Discord에 전송"""
-    trades = json.loads(LOG_FILE.read_text()) if LOG_FILE.exists() else []
+    trades = _load_trades(status="all")
     today = datetime.now().strftime("%Y-%m-%d")
 
     today_trades = [t for t in trades if t.get("entry_date") == today or t.get("exit_date") == today]
@@ -291,9 +312,8 @@ if __name__ == "__main__":
         else: i += 1
 
     # 모드 설정 (CLI --mode가 환경변수보다 우선)
-    global _MODE
     if args.get("mode"):
-        _MODE = args["mode"]
+        _set_mode(args["mode"])
 
     if cmd == "help":
         _send([{"title": "📖 notify.py 명령어 목록", "description": "\n".join([

@@ -68,6 +68,12 @@ PURPLE = 0xa855f7
 # ─── 데이터 로드 ───
 
 def load_trades() -> list:
+    try:
+        import sys as _sys; _sys.path.insert(0, str(Path(__file__).parent))
+        from db import query_trades
+        return query_trades(status="all", limit=5000)
+    except Exception:
+        pass
     if LOG_FILE.exists():
         return json.loads(LOG_FILE.read_text())
     return []

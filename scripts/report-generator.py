@@ -18,8 +18,21 @@ LOG_FILE = Path.home() / "Library/Application Support/tossctl/trade-log.json"
 STATE_FILE = Path.home() / "Library/Application Support/tossctl/daemon-state.json"
 CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/signal-config.json"
 
+# DB 연동
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from db import query_trades as _db_query
+    _DB_OK = True
+except Exception:
+    _DB_OK = False
+
 
 def load_trades():
+    if _DB_OK:
+        try:
+            return _db_query(status="all", limit=10000)
+        except Exception:
+            pass
     if LOG_FILE.exists():
         return json.loads(LOG_FILE.read_text())
     return []

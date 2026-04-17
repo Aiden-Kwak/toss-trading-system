@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS trades (
     tags            TEXT    DEFAULT '[]',
     group_id        TEXT,
     tranche_seq     INTEGER DEFAULT 1,
+    screener_result_id INTEGER REFERENCES screener_results(id),
+    max_profit_pct  REAL,
+    max_loss_pct    REAL,
+    holding_hours   REAL,
+    intended_price  REAL,
+    entry_slippage_pct REAL,
+    exit_intended_price REAL,
+    exit_slippage_pct REAL,
     created_at      TEXT    DEFAULT (datetime('now', 'localtime'))
 );
 
@@ -117,7 +125,24 @@ CREATE TABLE IF NOT EXISTS screener_results (
     vol_spike       REAL,
     gap_pct         REAL,
     current_price   REAL    DEFAULT 0,
+    change_rate     REAL,
     recommendation  TEXT    DEFAULT '',
+    regime          TEXT    DEFAULT '',
+    rsi             REAL,
+    bb_pctb         REAL,
+    macd_hist       REAL,
+    ema9            REAL,
+    ema21           REAL,
+    vol_spike_5d    REAL,
+    vol_trend       REAL,
+    vol_price_confirm INTEGER,
+    score_direction  INTEGER,
+    score_momentum   INTEGER,
+    score_price_action INTEGER,
+    score_volume     INTEGER,
+    score_context    INTEGER,
+    score_technical  INTEGER,
+    strategy        TEXT    DEFAULT '',
     created_at      TEXT    DEFAULT (datetime('now', 'localtime'))
 );
 
@@ -159,29 +184,37 @@ CREATE INDEX IF NOT EXISTS idx_errors_date      ON errors(created_at);
 """
 
 
-# ─── 연결 관리 ───
+# ─── 연결 관리 (커넥션 풀) ───
+
+_pool_conn: sqlite3.Connection | None = None
+
+
+def _get_pool_conn() -> sqlite3.Connection:
+    """모듈 레벨 커넥션 반환. 없으면 생성."""
+    global _pool_conn
+    if _pool_conn is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _pool_conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        _pool_conn.row_factory = sqlite3.Row
+        _pool_conn.execute("PRAGMA journal_mode=WAL")
+        _pool_conn.execute("PRAGMA foreign_keys=ON")
+    return _pool_conn
+
 
 @contextmanager
 def get_conn():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = _get_pool_conn()
     try:
         yield conn
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    finally:
-        conn.close()
 
 
 def init_db():
     """테이블 생성 (없을 때만) + 스키마 마이그레이션"""
     with get_conn() as conn:
-        # 기존 테이블에 신규 컬럼 추가 (SCHEMA 실행 전에 해야 인덱스 생성 성공)
         _migrate_schema(conn)
         conn.executescript(SCHEMA)
 
@@ -192,11 +225,44 @@ def _migrate_schema(conn):
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "trades" not in tables:
         return  # 첫 실행 — SCHEMA가 모든 것을 생성함
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
-    if "group_id" not in existing:
-        conn.execute("ALTER TABLE trades ADD COLUMN group_id TEXT")
-    if "tranche_seq" not in existing:
-        conn.execute("ALTER TABLE trades ADD COLUMN tranche_seq INTEGER DEFAULT 1")
+
+    def _add_col(table, col, coldef):
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
+
+    # trades 마이그레이션
+    _add_col("trades", "group_id", "TEXT")
+    _add_col("trades", "tranche_seq", "INTEGER DEFAULT 1")
+    _add_col("trades", "screener_result_id", "INTEGER")
+    _add_col("trades", "max_profit_pct", "REAL")
+    _add_col("trades", "max_loss_pct", "REAL")
+    _add_col("trades", "holding_hours", "REAL")
+    # TCA (Transaction Cost Analysis)
+    _add_col("trades", "intended_price", "REAL")
+    _add_col("trades", "entry_slippage_pct", "REAL")
+    _add_col("trades", "exit_intended_price", "REAL")
+    _add_col("trades", "exit_slippage_pct", "REAL")
+
+    # screener_results 마이그레이션
+    if "screener_results" in tables:
+        _add_col("screener_results", "change_rate", "REAL")
+        _add_col("screener_results", "regime", "TEXT DEFAULT ''")
+        _add_col("screener_results", "rsi", "REAL")
+        _add_col("screener_results", "bb_pctb", "REAL")
+        _add_col("screener_results", "macd_hist", "REAL")
+        _add_col("screener_results", "ema9", "REAL")
+        _add_col("screener_results", "ema21", "REAL")
+        _add_col("screener_results", "vol_spike_5d", "REAL")
+        _add_col("screener_results", "vol_trend", "REAL")
+        _add_col("screener_results", "vol_price_confirm", "INTEGER")
+        _add_col("screener_results", "score_direction", "INTEGER")
+        _add_col("screener_results", "score_momentum", "INTEGER")
+        _add_col("screener_results", "score_price_action", "INTEGER")
+        _add_col("screener_results", "score_volume", "INTEGER")
+        _add_col("screener_results", "score_context", "INTEGER")
+        _add_col("screener_results", "score_technical", "INTEGER")
+        _add_col("screener_results", "strategy", "TEXT DEFAULT ''")
 
 
 # ─── 거래 기록 ───
@@ -206,6 +272,15 @@ def insert_trade(t: dict) -> int:
         tags = t.get("tags", [])
         if isinstance(tags, list):
             tags = json.dumps(tags, ensure_ascii=False)
+        # TCA: 체결가 vs 의도가 슬리피지 계산
+        intended = t.get("intended_price")
+        entry_price = t.get("entry_price", 0) or 0
+        slippage = t.get("entry_slippage_pct")
+        if slippage is None and intended and entry_price and intended > 0:
+            side = t.get("side", "buy")
+            sign = +1 if side == "buy" else -1
+            slippage = round(sign * (entry_price - intended) / intended * 100, 4)
+
         cur = conn.execute("""
             INSERT INTO trades
               (symbol, name, side, market, quantity,
@@ -214,7 +289,8 @@ def insert_trade(t: dict) -> int:
                stop_loss, take_profit, status, mode, tags,
                exit_price, exit_date, exit_time, exit_reason,
                pnl_pct, pnl_amount, lesson, lesson_score,
-               group_id, tranche_seq)
+               group_id, tranche_seq, screener_result_id,
+               intended_price, entry_slippage_pct)
             VALUES
               (:symbol,:name,:side,:market,:quantity,
                :entry_price,:entry_date,:entry_time,
@@ -222,7 +298,8 @@ def insert_trade(t: dict) -> int:
                :stop_loss,:take_profit,:status,:mode,:tags,
                :exit_price,:exit_date,:exit_time,:exit_reason,
                :pnl_pct,:pnl_amount,:lesson,:lesson_score,
-               :group_id,:tranche_seq)
+               :group_id,:tranche_seq,:screener_result_id,
+               :intended_price,:entry_slippage_pct)
         """, {
             "symbol":       t.get("symbol", ""),
             "name":         t.get("name", ""),
@@ -250,13 +327,17 @@ def insert_trade(t: dict) -> int:
             "lesson_score": t.get("lesson_score"),
             "group_id":     t.get("group_id"),
             "tranche_seq":  t.get("tranche_seq", 1),
+            "screener_result_id": t.get("screener_result_id"),
+            "intended_price":     intended,
+            "entry_slippage_pct": slippage,
         })
         return cur.lastrowid
 
 
 def close_trade_db(symbol: str, exit_price: float, exit_reason: str,
                    exit_time: str = None, pnl_pct: float = None,
-                   pnl_amount: float = None) -> dict | None:
+                   pnl_amount: float = None,
+                   exit_intended_price: float = None) -> dict | None:
     now = datetime.now()
     with get_conn() as conn:
         row = conn.execute("""
@@ -282,10 +363,27 @@ def close_trade_db(symbol: str, exit_price: float, exit_reason: str,
         if exit_reason == "SELL_TAKE_PROFIT":
             tags.append("target_hit")
 
+        # holding_hours 계산
+        holding_hours = None
+        try:
+            entry_dt = datetime.strptime(
+                f"{row['entry_date']} {row['entry_time']}", "%Y-%m-%d %H:%M:%S")
+            holding_hours = round((now - entry_dt).total_seconds() / 3600, 2)
+        except Exception:
+            pass
+
+        # 매도 슬리피지 (sell은 의도가보다 낮게 체결되면 음의 슬리피지 → 불리)
+        exit_slippage_pct = None
+        if exit_intended_price and exit_intended_price > 0:
+            exit_slippage_pct = round(
+                -1 * (exit_price - exit_intended_price) / exit_intended_price * 100, 4)
+
         conn.execute("""
             UPDATE trades SET
               exit_price=?, exit_date=?, exit_time=?, exit_reason=?,
-              pnl_pct=?, pnl_amount=?, status='closed', tags=?
+              pnl_pct=?, pnl_amount=?, status='closed', tags=?,
+              holding_hours=?,
+              exit_intended_price=?, exit_slippage_pct=?
             WHERE id=?
         """, (
             exit_price,
@@ -295,10 +393,42 @@ def close_trade_db(symbol: str, exit_price: float, exit_reason: str,
             pnl_pct,
             pnl_amount,
             json.dumps(tags, ensure_ascii=False),
+            holding_hours,
+            exit_intended_price,
+            exit_slippage_pct,
             row["id"],
         ))
         return dict(row) | {"exit_price": exit_price, "pnl_pct": pnl_pct,
                              "status": "closed", "exit_reason": exit_reason}
+
+
+def update_trade_mfe_mae(symbol: str, current_profit_pct: float) -> None:
+    """보유 중 최대 수익/최대 손실(MFE/MAE)을 갱신"""
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT id, max_profit_pct, max_loss_pct FROM trades
+            WHERE symbol = ? AND status = 'open'
+            ORDER BY id DESC LIMIT 1
+        """, (symbol,)).fetchone()
+        if not row:
+            return
+        new_max = max(row["max_profit_pct"] or 0, current_profit_pct)
+        new_min = min(row["max_loss_pct"] or 0, current_profit_pct)
+        conn.execute("""
+            UPDATE trades SET max_profit_pct=?, max_loss_pct=?
+            WHERE id=?
+        """, (round(new_max, 2), round(new_min, 2), row["id"]))
+
+
+def find_latest_screener_result_id(symbol: str) -> int | None:
+    """최근 스크리너 결과에서 해당 종목의 result_id를 찾기"""
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT id FROM screener_results
+            WHERE symbol = ?
+            ORDER BY id DESC LIMIT 1
+        """, (symbol,)).fetchone()
+        return row["id"] if row else None
 
 
 def update_lesson_db(symbol: str, lesson: str, score: int) -> bool:
@@ -330,6 +460,25 @@ def query_trades(symbol: str = None, date_str: str = None,
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+
+def query_loss_counts() -> dict:
+    """종목별 손실 횟수 집계. {symbol: count} 반환."""
+    sql = """SELECT symbol, COUNT(*) as cnt
+             FROM trades
+             WHERE status='closed' AND pnl_pct < 0
+             GROUP BY symbol"""
+    with get_conn() as conn:
+        rows = conn.execute(sql).fetchall()
+    return {r["symbol"]: r["cnt"] for r in rows}
+
+
+def query_open_entry_grades() -> dict:
+    """보유 중인 종목의 진입 등급 조회. {symbol: grade} 반환."""
+    sql = "SELECT symbol, entry_grade FROM trades WHERE status='open'"
+    with get_conn() as conn:
+        rows = conn.execute(sql).fetchall()
+    return {r["symbol"]: r["entry_grade"] for r in rows}
 
 
 # ─── 분할매수 트랜치 ───
@@ -427,10 +576,17 @@ def complete_tranche_plan_by_symbol(symbol: str) -> int:
 
 
 def close_all_trades_by_symbol(symbol: str, exit_price: float, exit_reason: str,
-                                exit_time: str = None) -> list:
+                                exit_time: str = None,
+                                exit_intended_price: float = None) -> list:
     """해당 종목의 모든 open 트레이드를 일괄 종료. 종료된 레코드 목록 반환."""
     now = datetime.now()
     closed = []
+
+    exit_slippage_pct = None
+    if exit_intended_price and exit_intended_price > 0:
+        exit_slippage_pct = round(
+            -1 * (exit_price - exit_intended_price) / exit_intended_price * 100, 4)
+
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM trades WHERE symbol=? AND status='open' ORDER BY id",
@@ -457,10 +613,20 @@ def close_all_trades_by_symbol(symbol: str, exit_price: float, exit_reason: str,
             if exit_reason == "SELL_TAKE_PROFIT":
                 tags.append("target_hit")
 
+            holding_hours = None
+            try:
+                entry_dt = datetime.strptime(
+                    f"{row['entry_date']} {row['entry_time']}", "%Y-%m-%d %H:%M:%S")
+                holding_hours = round((now - entry_dt).total_seconds() / 3600, 2)
+            except Exception:
+                pass
+
             conn.execute("""
                 UPDATE trades SET
                   exit_price=?, exit_date=?, exit_time=?, exit_reason=?,
-                  pnl_pct=?, pnl_amount=?, status='closed', tags=?
+                  pnl_pct=?, pnl_amount=?, status='closed', tags=?,
+                  holding_hours=?,
+                  exit_intended_price=?, exit_slippage_pct=?
                 WHERE id=?
             """, (
                 exit_price,
@@ -470,6 +636,9 @@ def close_all_trades_by_symbol(symbol: str, exit_price: float, exit_reason: str,
                 pnl_pct,
                 pnl_amount,
                 json.dumps(tags, ensure_ascii=False),
+                holding_hours,
+                exit_intended_price,
+                exit_slippage_pct,
                 row["id"],
             ))
             closed.append(dict(row) | {
@@ -508,11 +677,16 @@ def insert_screener_run(data: dict) -> int:
             [(c, "skip")  for c in data.get("skip_list", [])]
         )
         for c, bucket in all_results:
+            bd = c.get("breakdown", {})
             conn.execute("""
                 INSERT INTO screener_results
                   (run_id, symbol, name, grade, score, source,
-                   vol_spike, gap_pct, current_price, recommendation)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                   vol_spike, gap_pct, current_price, change_rate,
+                   recommendation, regime, rsi, bb_pctb, macd_hist,
+                   ema9, ema21, vol_spike_5d, vol_trend, vol_price_confirm,
+                   score_direction, score_momentum, score_price_action,
+                   score_volume, score_context, score_technical, strategy)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 run_id,
                 c.get("symbol", ""),
@@ -523,7 +697,24 @@ def insert_screener_run(data: dict) -> int:
                 c.get("_vol_spike"),
                 c.get("_gap_pct"),
                 c.get("current_price", 0),
+                c.get("change_rate"),
                 c.get("recommendation", ""),
+                c.get("regime", ""),
+                bd.get("momentum", {}).get("rsi"),
+                bd.get("price_action", {}).get("bb_pctb"),
+                c.get("_macd_hist"),  # signal-engine 미산출 → 추후 확장
+                c.get("_ema9"),      # tech 보강 시 채워짐
+                c.get("_ema21"),     # tech 보강 시 채워짐
+                c.get("_vol_spike_5d"),
+                c.get("_vol_trend"),
+                1 if c.get("_vol_price_confirm") else 0 if c.get("_vol_price_confirm") is not None else None,
+                bd.get("direction", {}).get("score"),
+                bd.get("momentum", {}).get("score"),
+                bd.get("price_action", {}).get("score"),
+                bd.get("volume", {}).get("score"),
+                bd.get("context", {}).get("score"),
+                bd.get("technical", {}).get("score"),
+                c.get("strategy", ""),
             ))
         return run_id
 

@@ -270,20 +270,49 @@ def evaluate_candidates(candidates: list, portfolio: dict = None) -> list:
     scored = []
     seen = set()
 
+    # technical-indicators.py 직접 import (subprocess 대신 함수 호출 — 속도)
+    try:
+        import importlib
+        _tech_mod = importlib.import_module("technical-indicators")
+    except Exception:
+        _tech_mod = None
+
     for c in candidates:
         sym = c.get("symbol", "")
         if sym in seen:
             continue
         seen.add(sym)
 
-        try:
-            result = subprocess.run(
-                [PYTHON, str(SCRIPTS_DIR / "signal-engine.py"), "evaluate-buy",
-                 "--quote", json.dumps(c),
-                 "--portfolio", json.dumps(portfolio),
-                 "--config", "{}"],
-                capture_output=True, text=True, timeout=5
+        # tech 조회 (signal-engine 채점 정확도를 위해 필수)
+        tech = None
+        if _tech_mod is not None:
+            market_code = c.get("market_code", "")
+            is_kr = (
+                market_code in ("KSP", "KSQ") or
+                (sym.replace("A", "").isdigit() and len(sym.replace("A", "")) == 6)
             )
+            tech_market = "kr" if is_kr else "us"
+            # KR은 A-prefix 필요
+            tech_code = sym
+            if is_kr and not tech_code.startswith("A"):
+                tech_code = f"A{tech_code}" if tech_code.isdigit() else tech_code
+            try:
+                tech = _tech_mod.analyze_symbol(tech_code, tech_market)
+                if isinstance(tech, dict) and tech.get("error"):
+                    tech = None
+            except Exception:
+                tech = None
+
+        try:
+            args = [
+                PYTHON, str(SCRIPTS_DIR / "signal-engine.py"), "evaluate-buy",
+                "--quote", json.dumps(c),
+                "--portfolio", json.dumps(portfolio),
+                "--config", "{}",
+            ]
+            if tech is not None:
+                args += ["--tech", json.dumps(tech)]
+            result = subprocess.run(args, capture_output=True, text=True, timeout=8)
             if result.returncode == 0:
                 ev = json.loads(result.stdout)
                 ev["_source"] = c.get("_source", "unknown")
@@ -293,6 +322,14 @@ def evaluate_candidates(candidates: list, portfolio: dict = None) -> list:
                 ev["_vol_price_confirm"] = c.get("_vol_price_confirm", False)
                 ev["_gap_pct"] = c.get("_gap_pct", None)
                 ev["avg_volume_20d"] = c.get("avg_volume_20d", None)
+                ev["market_code"] = c.get("market_code", "")
+                # tech 데이터 첨부 (DB 저장 + 후속 재채점에서 사용)
+                if tech is not None:
+                    ev["tech"] = tech
+                    ev["rsi"] = tech.get("rsi", {}).get("value")
+                    ev["bb_pctb"] = tech.get("bollinger", {}).get("pct_b")
+                    ev["ema9"] = tech.get("ema", {}).get("ema9")
+                    ev["ema21"] = tech.get("ema", {}).get("ema21")
                 scored.append(ev)
         except Exception:
             continue
@@ -324,18 +361,11 @@ def evaluate_candidates(candidates: list, portfolio: dict = None) -> list:
 
 
 def _load_loss_history() -> dict:
-    """과거 거래에서 종목별 손실 횟수 조회"""
-    log_file = Path.home() / "Library/Application Support/tossctl/trade-log.json"
-    if not log_file.exists():
-        return {}
+    """DB에서 종목별 손실 횟수 조회 (집계 쿼리)"""
     try:
-        trades = json.loads(log_file.read_text())
-        losses = {}
-        for t in trades:
-            if t.get("status") == "closed" and (t.get("pnl_pct") or 0) < 0:
-                sym = t.get("symbol", "")
-                losses[sym] = losses.get(sym, 0) + 1
-        return losses
+        import sys as _sys; _sys.path.insert(0, str(Path(__file__).parent))
+        from db import query_loss_counts
+        return query_loss_counts()
     except Exception:
         return {}
 

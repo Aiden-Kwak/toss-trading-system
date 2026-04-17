@@ -2,25 +2,23 @@
 """
 trade-logger.py — 거래 자동 기록
 
-모든 거래(매수/매도)를 trade-log.json에 자동 기록합니다.
-PostToolUse hook 또는 대시보드 API에서 호출됩니다.
+DB를 primary 저장소로 사용합니다. JSON은 백업용으로 병행 기록합니다.
 
 사용법:
-  # 거래 기록
   python3 trade-logger.py log \
     --symbol TSLA --side buy --qty 1 --price 250.5 \
     --grade B --score 75 --reason "모멘텀 상승" \
     [--stop-loss 243 --take-profit 268]
 
-  # 청산 기록 (기존 매수에 매칭)
   python3 trade-logger.py close \
     --symbol TSLA --exit-price 268 --exit-reason TAKE_PROFIT
 
-  # 전체 로그 조회
+  python3 trade-logger.py close-all \
+    --symbol TSLA --exit-price 268 --exit-reason STOP_LOSS
+
   python3 trade-logger.py list [--status open|closed|all]
 
-  # 교훈 추가 (청산 후)
-  python3 trade-logger.py lesson --symbol TSLA --lesson "모멘텀 진입 성공, 타이밍 적절" --score 8
+  python3 trade-logger.py lesson --symbol TSLA --lesson "모멘텀 진입 성공" --score 8
 """
 
 import json
@@ -29,37 +27,49 @@ from datetime import datetime
 from pathlib import Path
 
 LOG_FILE = Path.home() / "Library/Application Support/tossctl/trade-log.json"
-CONFIG_FILE = Path.home() / "Library/Application Support/tossctl/signal-config.json"
 
-# DB 연동 (없으면 JSON 단독)
+# DB 연동
 try:
-    import sys as _sys
-    _sys.path.insert(0, str(Path(__file__).parent))
+    sys.path.insert(0, str(Path(__file__).parent))
     from db import (init_db, insert_trade, close_trade_db, update_lesson_db,
-                    close_all_trades_by_symbol)
+                    close_all_trades_by_symbol, query_trades)
     init_db()
     _DB_OK = True
 except Exception:
     _DB_OK = False
 
 
-def load_log() -> list:
+# ─── JSON 백업 (보조) ───
+
+def _json_load() -> list:
     if LOG_FILE.exists():
-        return json.loads(LOG_FILE.read_text())
+        try:
+            return json.loads(LOG_FILE.read_text())
+        except Exception:
+            return []
     return []
 
 
-def save_log(trades: list):
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LOG_FILE.write_text(json.dumps(trades, ensure_ascii=False, indent=2))
+def _json_save(trades: list):
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LOG_FILE.write_text(json.dumps(trades, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
 
+
+def _json_append(trade: dict):
+    """JSON에 거래 추가 (백업용)"""
+    trades = _json_load()
+    trades.append(trade)
+    _json_save(trades)
+
+
+# ─── 명령어 ───
 
 def log_trade(args: dict):
     """새 거래 기록"""
-    trades = load_log()
-
     trade = {
-        "id": len(trades) + 1,
         "symbol": args.get("symbol", "").upper(),
         "name": args.get("name", ""),
         "side": args.get("side", "buy"),
@@ -81,166 +91,149 @@ def log_trade(args: dict):
         "lesson": None,
         "lesson_score": None,
         "status": "open",
-        "mode": args.get("mode", "manual"),  # manual / autotrade
+        "mode": args.get("mode", "manual"),
         "tags": [],
         "group_id": args.get("group-id"),
         "tranche_seq": int(args.get("tranche-seq", "1")),
+        "screener_result_id": int(args["screener-result-id"]) if args.get("screener-result-id") else None,
+        "intended_price": float(args["intended-price"]) if args.get("intended-price") else None,
     }
 
-    trades.append(trade)
-    save_log(trades)
+    db_id = None
     if _DB_OK:
         try:
-            insert_trade(trade)
+            db_id = insert_trade(trade)
         except Exception:
             pass
+
+    # JSON 백업
+    trade["id"] = db_id or (len(_json_load()) + 1)
+    _json_append(trade)
     print(json.dumps(trade, ensure_ascii=False, indent=2))
 
 
 def close_trade(args: dict):
-    """거래 청산 기록"""
-    trades = load_log()
+    """거래 청산 기록 (단일)"""
     symbol = args.get("symbol", "").upper()
     exit_price = float(args.get("exit-price", "0"))
     exit_reason = args.get("exit-reason", "MANUAL")
+    exit_intended = float(args["exit-intended-price"]) if args.get("exit-intended-price") else None
 
-    # 해당 심볼의 가장 최근 open 거래 찾기
-    target = None
-    for t in reversed(trades):
-        if t["symbol"] == symbol and t["status"] == "open":
-            target = t
-            break
-
-    if not target:
-        print(json.dumps({"error": f"no open trade found for {symbol}"}))
-        return
-
-    entry = target["entry_price"]
-    cost_rate = 0.002  # 왕복 수수료 0.2%
-    gross_pnl = (exit_price - entry) / entry if entry > 0 else 0
-    net_pnl = gross_pnl - cost_rate
-
-    target["exit_price"] = exit_price
-    target["exit_date"] = datetime.now().strftime("%Y-%m-%d")
-    target["exit_reason"] = exit_reason
-    target["pnl_pct"] = round(net_pnl * 100, 2)
-    target["pnl_amount"] = round((exit_price - entry) * target["quantity"], 2)
-    target["status"] = "closed"
-
-    # 자동 태깅
-    if net_pnl > 0:
-        target["tags"].append("win")
-    else:
-        target["tags"].append("loss")
-    if exit_reason == "STOP_LOSS":
-        target["tags"].append("stopped_out")
-    if exit_reason == "TAKE_PROFIT":
-        target["tags"].append("target_hit")
-
-    save_log(trades)
     if _DB_OK:
         try:
             close_trade_db(symbol, exit_price, exit_reason,
-                           pnl_pct=target.get("pnl_pct"),
-                           pnl_amount=target.get("pnl_amount"))
-        except Exception:
-            pass
-    print(json.dumps(target, ensure_ascii=False, indent=2))
+                           exit_intended_price=exit_intended)
+        except Exception as e:
+            print(json.dumps({"error": f"DB close failed: {e}"}), file=sys.stderr)
+
+    # JSON 백업 업데이트
+    trades = _json_load()
+    target = None
+    for t in reversed(trades):
+        if t.get("symbol") == symbol and t.get("status") == "open":
+            target = t
+            break
+
+    if target:
+        entry = target["entry_price"]
+        cost_rate = 0.002
+        gross_pnl = (exit_price - entry) / entry if entry > 0 else 0
+        net_pnl = gross_pnl - cost_rate
+
+        target["exit_price"] = exit_price
+        target["exit_date"] = datetime.now().strftime("%Y-%m-%d")
+        target["exit_reason"] = exit_reason
+        target["pnl_pct"] = round(net_pnl * 100, 2)
+        target["pnl_amount"] = round((exit_price - entry) * target["quantity"], 2)
+        target["status"] = "closed"
+        _json_save(trades)
+        print(json.dumps(target, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps({"warning": f"no open trade in JSON for {symbol}, DB updated"}))
 
 
 def close_all_trades(args: dict):
     """심볼의 모든 open 거래 일괄 청산"""
-    trades = load_log()
     symbol = args.get("symbol", "").upper()
     exit_price = float(args.get("exit-price", "0"))
     exit_reason = args.get("exit-reason", "MANUAL")
+    exit_intended = float(args["exit-intended-price"]) if args.get("exit-intended-price") else None
 
+    if _DB_OK:
+        try:
+            close_all_trades_by_symbol(symbol, exit_price, exit_reason,
+                                       exit_intended_price=exit_intended)
+        except Exception as e:
+            print(json.dumps({"error": f"DB close-all failed: {e}"}), file=sys.stderr)
+
+    # JSON 백업 업데이트
+    trades = _json_load()
     closed = []
     for t in trades:
-        if t["symbol"] == symbol and t["status"] == "open":
+        if t.get("symbol") == symbol and t.get("status") == "open":
             entry = t["entry_price"]
             cost_rate = 0.002
             gross_pnl = (exit_price - entry) / entry if entry > 0 else 0
             net_pnl = gross_pnl - cost_rate
-
             t["exit_price"] = exit_price
             t["exit_date"] = datetime.now().strftime("%Y-%m-%d")
             t["exit_reason"] = exit_reason
             t["pnl_pct"] = round(net_pnl * 100, 2)
             t["pnl_amount"] = round((exit_price - entry) * t["quantity"], 2)
             t["status"] = "closed"
-
-            if net_pnl > 0:
-                t["tags"].append("win")
-            else:
-                t["tags"].append("loss")
-            if exit_reason == "STOP_LOSS":
-                t["tags"].append("stopped_out")
-            if exit_reason == "TAKE_PROFIT":
-                t["tags"].append("target_hit")
             closed.append(t)
-
-    save_log(trades)
-    if _DB_OK and closed:
-        try:
-            close_all_trades_by_symbol(symbol, exit_price, exit_reason)
-        except Exception:
-            pass
+    _json_save(trades)
     print(json.dumps(closed, ensure_ascii=False, indent=2))
 
 
 def add_lesson(args: dict):
     """거래에 교훈 추가"""
-    trades = load_log()
     symbol = args.get("symbol", "").upper()
     lesson = args.get("lesson", "")
     score = int(args.get("score", "5"))
 
-    # 해당 심볼의 가장 최근 closed 거래 찾기
-    target = None
-    for t in reversed(trades):
-        if t["symbol"] == symbol and t["status"] == "closed":
-            target = t
-            break
-
-    if not target:
-        print(json.dumps({"error": f"no closed trade found for {symbol}"}))
-        return
-
-    target["lesson"] = lesson
-    target["lesson_score"] = score
-
-    # 교훈 기반 태깅
-    keywords = {
-        "모멘텀": "momentum", "역추세": "mean_reversion", "급등": "spike",
-        "뉴스": "news_driven", "실적": "earnings", "테마": "theme",
-        "타이밍": "timing", "사이징": "sizing", "손절": "stop_loss_related",
-    }
-    for k, tag in keywords.items():
-        if k in lesson:
-            target["tags"].append(tag)
-
-    save_log(trades)
     if _DB_OK:
         try:
             update_lesson_db(symbol, lesson, score)
         except Exception:
             pass
-    print(json.dumps(target, ensure_ascii=False, indent=2))
+
+    # JSON 백업 업데이트
+    trades = _json_load()
+    target = None
+    for t in reversed(trades):
+        if t.get("symbol") == symbol and t.get("status") == "closed":
+            target = t
+            break
+    if target:
+        target["lesson"] = lesson
+        target["lesson_score"] = score
+        _json_save(trades)
+        print(json.dumps(target, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps({"info": "DB updated, no matching JSON entry"}))
 
 
 def list_trades(args: dict):
-    """거래 목록 조회"""
-    trades = load_log()
+    """거래 목록 조회 — DB 우선"""
     status = args.get("status", "all")
+    if _DB_OK:
+        try:
+            trades = query_trades(status=status, limit=500)
+            print(json.dumps(trades, ensure_ascii=False, indent=2))
+            return
+        except Exception:
+            pass
+    # DB 실패 시 JSON fallback
+    trades = _json_load()
     if status != "all":
-        trades = [t for t in trades if t["status"] == status]
+        trades = [t for t in trades if t.get("status") == status]
     print(json.dumps(trades, ensure_ascii=False, indent=2))
 
 
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "command required: log | close | lesson | list"}))
+        print(json.dumps({"error": "command required: log | close | close-all | lesson | list"}))
         sys.exit(1)
 
     command = sys.argv[1]

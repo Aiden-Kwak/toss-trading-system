@@ -23,3 +23,9 @@ node_modules/
 
 # Trade logs with personal data
 memory-templates/trades/
+
+# SQLite DB (personal trading history)
+trading.db
+trading.db-journal
+trading.db-wal
+trading.db-shm

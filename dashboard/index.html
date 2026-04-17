@@ -154,6 +154,7 @@ button.save:hover { opacity:.85; }
   <div class="tab" onclick="switchTab('screener')">스크리너</div>
   <div class="tab" onclick="switchTab('backtest')">백테스트</div>
   <div class="tab" onclick="switchTab('risk')">리스크</div>
+  <div class="tab" onclick="switchTab('performance')">성과</div>
   <div class="tab" onclick="switchTab('journal')">기록</div>
   <div class="tab" onclick="switchTab('history')">이력DB</div>
 </div>
@@ -330,7 +331,36 @@ button.save:hover { opacity:.85; }
 </div>
 </div>
 
-<!-- ==================== TAB 4: 기록 ==================== -->
+<!-- ==================== TAB 5: 성과 ==================== -->
+<div class="tab-page" id="page-performance">
+<div class="container">
+  <div class="card full-width">
+    <div class="card-header">
+      <span class="card-title">성과 지표 (최근 N일)</span>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="perfDays" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px">
+          <option value="7">7일</option>
+          <option value="30" selected>30일</option>
+          <option value="90">90일</option>
+          <option value="180">180일</option>
+        </select>
+        <button class="card-action" onclick="loadPerformance()">새로고침</button>
+      </div>
+    </div>
+    <div id="perfSummary"><div class="loading">기간을 선택하고 새로고침을 누르세요</div></div>
+  </div>
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">Equity Curve & Drawdown</span></div>
+    <div id="perfChart"><div class="loading">성과 지표 로드 시 함께 표시됩니다</div></div>
+  </div>
+  <div class="card full-width">
+    <div class="card-header"><span class="card-title">주간 MDD 서킷 브레이커 (최근 7일)</span></div>
+    <div id="perfWeeklyMdd"><div class="loading">성과 로드 시 표시</div></div>
+  </div>
+</div>
+</div>
+
+<!-- ==================== TAB 6: 기록 ==================== -->
 <div class="tab-page" id="page-journal">
 <div class="container">
   <div class="card full-width">
@@ -439,6 +469,7 @@ function switchTab(name) {
   if (name === 'screener') loadWatchlist();
   if (name === 'risk') { loadSettings(); loadRiskGate(); loadProtected(); }
   if (name === 'journal') loadTrades();
+  if (name === 'performance') loadPerformance();
   if (name === 'history') { document.getElementById('histDate').value = new Date().toISOString().slice(0,10); loadHistory(); }
 }
 
@@ -685,10 +716,11 @@ function renderScreenerResult(d) { const panel=document.getElementById('screener
   if((d.watch_list||[]).length>0){html+='<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">'; d.watch_list.forEach(e=>{html+=`<span class="badge badge-yellow">${e.symbol} ${e.score_pct}%</span>`;}); html+='</div>';} panel.innerHTML=html||'<div class="loading">결과 없음</div>'; }
 
 // Trades
+function _fmtSlip(v) { if (v==null) return '-'; const cls = v<=0 ? 'positive' : 'negative'; const s = (v>0?'+':'')+Number(v).toFixed(3)+'%'; return `<span class="${cls} mono" style="font-size:11px">${s}</span>`; }
 async function loadTrades() { const r=await fetch(API+'/api/trades?status=all'); const d=await r.json(); const panel=document.getElementById('tradeLog'); if(!Array.isArray(d)||d.length===0){panel.innerHTML='<div class="loading">거래 기록 없음</div>';return;}
-  let html=`<table><tr><th>종목</th><th>방향</th><th>진입일</th><th>진입가</th><th>청산일</th><th>청산가</th><th>수익률</th><th>사유</th><th>교훈</th><th>상태</th></tr>`;
+  let html=`<table><tr><th>종목</th><th>방향</th><th>진입일</th><th>의도가</th><th>진입가</th><th>진입 슬리피지</th><th>청산일</th><th>청산 의도가</th><th>청산가</th><th>청산 슬리피지</th><th>수익률</th><th>사유</th><th>교훈</th><th>상태</th></tr>`;
   d.slice(-15).reverse().forEach(t=>{ const pc=(t.pnl_pct||0)>=0?'positive':'negative'; const pnl=t.pnl_pct!=null?`${t.pnl_pct>0?'+':''}${t.pnl_pct}%`:'-'; const sb=t.status==='open'?'<span class="badge badge-blue">보유</span>':'<span class="badge badge-purple">청산</span>'; const lesson=t.lesson?`<span title="${t.lesson}">${t.lesson.slice(0,15)}...</span>`:'-';
-    html+=`<tr><td><strong>${t.symbol}</strong></td><td>${t.side==='buy'?'매수':'매도'}</td><td class="mono" style="font-size:11px">${t.entry_date||'-'}</td><td class="mono">${t.entry_price}</td><td class="mono" style="font-size:11px">${t.exit_date||'-'}</td><td class="mono">${t.exit_price||'-'}</td><td class="${pc} mono">${pnl}</td><td style="font-size:11px">${t.exit_reason||'-'}</td><td style="font-size:11px">${lesson}</td><td>${sb}</td></tr>`; }); panel.innerHTML=html+'</table>'; }
+    html+=`<tr><td><strong>${t.symbol}</strong></td><td>${t.side==='buy'?'매수':'매도'}</td><td class="mono" style="font-size:11px">${t.entry_date||'-'}</td><td class="mono" style="font-size:11px">${t.intended_price!=null?t.intended_price:'-'}</td><td class="mono">${t.entry_price}</td><td>${_fmtSlip(t.entry_slippage_pct)}</td><td class="mono" style="font-size:11px">${t.exit_date||'-'}</td><td class="mono" style="font-size:11px">${t.exit_intended_price!=null?t.exit_intended_price:'-'}</td><td class="mono">${t.exit_price||'-'}</td><td>${_fmtSlip(t.exit_slippage_pct)}</td><td class="${pc} mono">${pnl}</td><td style="font-size:11px">${t.exit_reason||'-'}</td><td style="font-size:11px">${lesson}</td><td>${sb}</td></tr>`; }); panel.innerHTML=html+'</table>'; }
 
 // Analysis
 async function loadAnalysis() { const panel=document.getElementById('analysisPanel'); panel.innerHTML='<div class="loading"><span class="spinner"></span></div>'; const r=await fetch(API+'/api/trades/analyze'); const d=await r.json(); const s=d.stats||{}, p=d.patterns||{};
@@ -705,6 +737,135 @@ async function loadSuggestions() { const panel=document.getElementById('suggestP
     if(s.param&&s.suggested!==null){ const curr=Array.isArray(s.current)?s.current.join(', '):s.current; const sugg=Array.isArray(s.suggested)?s.suggested.join(', '):s.suggested; html+=`<div class="suggest-params"><span>${s.param}:</span><span class="current">${curr}</span><span class="arrow">→</span><span class="suggested">${sugg}</span><button class="suggest-apply" onclick="applySuggestion('${s.id}')">반영</button></div>`; } html+='</div>'; });
   const cr=await fetch(API+'/api/trades/config'); const config=await cr.json(); html+='<div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:8px"><div style="font-size:11px;color:var(--text2);margin-bottom:6px">현재 파라미터</div><div style="font-size:12px;font-family:monospace">'; for(const[k,v] of Object.entries(config)) html+=`${k}: <strong>${Array.isArray(v)?v.join(', '):v}</strong><br>`; html+='</div></div>'; panel.innerHTML=html; }
 async function applySuggestion(id) { const r=await fetch(API+'/api/trades/apply-suggestion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}); const d=await r.json(); if(d.applied) loadSuggestions(); }
+
+// Performance (Sharpe/Sortino/MDD + Equity Curve)
+async function loadPerformance() {
+  const days = parseInt(document.getElementById('perfDays').value) || 30;
+  const sumEl = document.getElementById('perfSummary');
+  const chartEl = document.getElementById('perfChart');
+  const wmddEl = document.getElementById('perfWeeklyMdd');
+  sumEl.innerHTML = '<div class="loading"><span class="spinner"></span> 계산 중...</div>';
+  chartEl.innerHTML = '<div class="loading">로딩...</div>';
+  wmddEl.innerHTML = '<div class="loading">로딩...</div>';
+  try {
+    const r = await fetch(API+`/api/db/performance?days=${days}`);
+    const d = await r.json();
+    if (d.error) { sumEl.innerHTML = `<div class="loading">${d.error}</div>`; chartEl.innerHTML=''; wmddEl.innerHTML=''; return; }
+
+    const sh = d.sharpe || {}, so = d.sortino || {}, mdd = d.mdd_period || {}, wm = d.mdd_weekly || {};
+    const retCls = (d.total_return_pct || 0) >= 0 ? 'positive' : 'negative';
+    const mddCls = 'negative';
+
+    let html = '<div class="summary-grid">';
+    html += `<div class="summary-item"><div class="summary-label">누적 수익 (${days}일)</div><div class="summary-value ${retCls}">${(d.total_return_pct||0)>0?'+':''}${d.total_return_pct||0}%</div><div class="summary-sub">거래일 ${d.trading_days_with_activity||0}일</div></div>`;
+    html += `<div class="summary-item"><div class="summary-label">Sharpe (연율)</div><div class="summary-value">${sh.sharpe!=null?sh.sharpe:'-'}</div><div class="summary-sub">vol ${sh.annualized_vol_pct||0}% / ret ${sh.annualized_return_pct||0}%</div></div>`;
+    html += `<div class="summary-item"><div class="summary-label">Sortino</div><div class="summary-value">${so.sortino!=null?so.sortino:'-'}</div><div class="summary-sub">하방편차 ${so.downside_dev_pct||0}%</div></div>`;
+    html += `<div class="summary-item"><div class="summary-label">최대 DD</div><div class="summary-value ${mddCls}">${mdd.mdd_pct||0}%</div><div class="summary-sub">${mdd.peak_date||'-'} → ${mdd.trough_date||'-'}</div></div>`;
+    html += '</div>';
+    html += '<div class="summary-grid" style="margin-top:8px">';
+    const dwr = d.day_win_rate || 0;
+    html += `<div class="summary-item"><div class="summary-label">일 승률</div><div class="summary-value">${dwr}%</div><div class="summary-sub">${d.winning_days||0}승 ${d.losing_days||0}패</div></div>`;
+    html += `<div class="summary-item"><div class="summary-label">평균 일수익</div><div class="summary-value">${sh.mean_daily_pct||0}%</div><div class="summary-sub">σ ${sh.std_daily_pct||0}%</div></div>`;
+    html += `<div class="summary-item"><div class="summary-label">주간 MDD</div><div class="summary-value ${mddCls}">${wm.mdd_pct||0}%</div><div class="summary-sub">서킷 브레이커 연동</div></div>`;
+    html += `<div class="summary-item"><div class="summary-label">기간</div><div class="summary-value" style="font-size:16px">${days}일</div><div class="summary-sub">rf=0%</div></div>`;
+    html += '</div>';
+    sumEl.innerHTML = html;
+
+    // Equity Curve SVG chart
+    const curve = d.equity_curve || [];
+    if (!curve.length) {
+      chartEl.innerHTML = '<div class="loading">청산 거래가 없어 곡선 표시 불가</div>';
+    } else {
+      const W = 900, H = 260, PAD = 40;
+      const eqs = curve.map(p => p.equity);
+      const dds = curve.map(p => p.drawdown || 0);
+      const minEq = Math.min(...eqs, 100);
+      const maxEq = Math.max(...eqs, 100);
+      const rangeEq = Math.max(maxEq - minEq, 1);
+      const n = curve.length;
+      const xFor = i => PAD + (n > 1 ? (W - PAD*2) * i / (n - 1) : 0);
+      const yForEq = v => PAD + (H - PAD*2) * (1 - (v - minEq) / rangeEq);
+      const minDD = Math.min(...dds, 0);
+      const yForDD = v => PAD + (H - PAD*2) * ((0 - v) / Math.max(0.0001, -minDD));
+
+      // Equity path
+      let eqPath = '';
+      curve.forEach((p, i) => { eqPath += (i === 0 ? 'M' : 'L') + xFor(i).toFixed(1) + ',' + yForEq(p.equity).toFixed(1) + ' '; });
+      const eqColor = eqs[eqs.length-1] >= 100 ? '#22c55e' : '#ef4444';
+
+      // Fill under equity (baseline 100)
+      const baseY = yForEq(100);
+      let fillPath = `M${xFor(0).toFixed(1)},${baseY} `;
+      curve.forEach((p, i) => { fillPath += 'L' + xFor(i).toFixed(1) + ',' + yForEq(p.equity).toFixed(1) + ' '; });
+      fillPath += `L${xFor(n-1).toFixed(1)},${baseY} Z`;
+
+      // Ticks / labels
+      const ticks = 4;
+      let yLabels = '';
+      for (let i = 0; i <= ticks; i++) {
+        const v = minEq + rangeEq * (1 - i/ticks);
+        const y = PAD + (H - PAD*2) * i / ticks;
+        yLabels += `<line x1="${PAD}" y1="${y}" x2="${W-PAD}" y2="${y}" stroke="#2d3348" stroke-width="1" stroke-dasharray="2,3"/>`;
+        yLabels += `<text x="${PAD-6}" y="${y+4}" text-anchor="end" fill="#8b8fa3" font-size="10" font-family="monospace">${v.toFixed(1)}</text>`;
+      }
+      const firstDate = curve[0].date, lastDate = curve[n-1].date;
+
+      // DD bars (mini)
+      const DD_H = 60;
+      let ddBars = '';
+      curve.forEach((p, i) => {
+        const bw = Math.max(1, (W - PAD*2) / n - 1);
+        const dd = p.drawdown || 0;
+        const barH = Math.min(DD_H - 4, (dd / (minDD || -1)) * (DD_H - 4));
+        if (dd < 0) {
+          ddBars += `<rect x="${xFor(i).toFixed(1)}" y="0" width="${bw.toFixed(1)}" height="${Math.abs(barH).toFixed(1)}" fill="#ef4444" opacity="0.55"/>`;
+        }
+      });
+
+      chartEl.innerHTML = `
+        <div style="overflow-x:auto">
+        <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+          <rect x="0" y="0" width="${W}" height="${H}" fill="var(--surface)"/>
+          ${yLabels}
+          <line x1="${PAD}" y1="${baseY}" x2="${W-PAD}" y2="${baseY}" stroke="#8b8fa3" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="${W-PAD+4}" y="${baseY+4}" fill="#8b8fa3" font-size="10">100</text>
+          <path d="${fillPath}" fill="${eqColor}" opacity="0.12"/>
+          <path d="${eqPath}" stroke="${eqColor}" stroke-width="2" fill="none"/>
+          <text x="${PAD}" y="${H-8}" fill="#8b8fa3" font-size="10" font-family="monospace">${firstDate}</text>
+          <text x="${W-PAD}" y="${H-8}" fill="#8b8fa3" font-size="10" font-family="monospace" text-anchor="end">${lastDate}</text>
+          <text x="${W/2}" y="14" fill="#8b8fa3" font-size="11" text-anchor="middle">Equity Curve (base 100)</text>
+        </svg>
+        <svg viewBox="0 0 ${W} ${DD_H}" width="100%" style="max-width:${W}px;display:block;margin-top:4px">
+          <rect x="0" y="0" width="${W}" height="${DD_H}" fill="var(--surface)"/>
+          ${ddBars}
+          <text x="${PAD}" y="${DD_H-6}" fill="#8b8fa3" font-size="10">Drawdown (peak=0, min=${minDD.toFixed(2)}%)</text>
+        </svg>
+        </div>`;
+    }
+
+    // Weekly MDD circuit breaker widget
+    const wmddPct = wm.mdd_pct || 0;
+    const cfgR = await fetch(API+'/api/trades/config').then(x => x.json()).catch(() => ({}));
+    const wmLimit = cfgR.weekly_mdd_limit_pct ?? -5;
+    const pctOfLimit = wmLimit !== 0 ? Math.min(100, Math.abs(wmddPct / wmLimit) * 100) : 0;
+    const barColor = pctOfLimit >= 80 ? 'var(--red)' : pctOfLimit >= 50 ? 'var(--yellow)' : 'var(--green)';
+    const tripped = wmLimit !== null && wmddPct <= wmLimit;
+    wmddEl.innerHTML = `
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+        <div class="stat-mini"><div class="stat-mini-value ${mddCls}">${wmddPct.toFixed(2)}%</div><div class="stat-mini-label">현재 주간 MDD</div></div>
+        <div class="stat-mini"><div class="stat-mini-value">${wmLimit}%</div><div class="stat-mini-label">한도 (설정값)</div></div>
+        <div class="stat-mini"><div class="stat-mini-value ${tripped?'negative':'positive'}">${tripped?'트립됨':'정상'}</div><div class="stat-mini-label">상태</div></div>
+        <div style="flex:1;min-width:200px">
+          <div style="height:10px;background:var(--surface2);border-radius:5px;overflow:hidden">
+            <div style="width:${pctOfLimit}%;height:100%;background:${barColor};border-radius:5px;transition:width .3s"></div>
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">한도 대비 ${pctOfLimit.toFixed(0)}% 사용 · ${wm.peak_date||'-'} → ${wm.trough_date||'-'}</div>
+        </div>
+      </div>`;
+  } catch(e) {
+    sumEl.innerHTML = `<div class="loading">오류: ${e.message}</div>`;
+  }
+}
 
 // Load all (dashboard tab)
 // Backtest: Day Simulation
@@ -979,7 +1140,10 @@ async function loadSettings() {
     {key:'stop_loss_pct', label:'손절선', unit:'% (진입가 대비)', type:'number', step:0.5, min:-20, max:0},
     {key:'take_profit_pct', label:'익절선', unit:'% (진입가 대비)', type:'number', step:0.5, min:0, max:50},
     {key:'daily_loss_limit_pct', label:'일일 최대 손실', unit:'% (데몬 운용금 대비, 보호종목 무관)', type:'number', step:0.5, min:-20, max:0},
+    {key:'weekly_mdd_limit_pct', label:'주간 MDD 서킷', unit:'% (7일 누적 DD 한도)', type:'number', step:0.5, min:-30, max:0},
     {key:'cooldown_after_consecutive_losses', label:'연속 손절 냉각', unit:'회 연속 손절 후 냉각', type:'number', step:1, min:1, max:10},
+    {key:'vol_target_per_trade_pct', label:'Vol Target 리스크', unit:'% (equity 대비 1건 리스크)', type:'number', step:0.1, min:0.1, max:5},
+    {key:'stop_atr_multiple', label:'ATR 손절 배수', unit:'× ATR (Vol Target 사용 시)', type:'number', step:0.1, min:0.5, max:5},
   ];
 
   let html = '<div class="settings-grid">';
@@ -1002,6 +1166,14 @@ async function loadSettings() {
     <label style="font-size:13px"><input type="checkbox" id="cfg-grade-C" ${grades.includes('C')?'checked':''}> C (WATCH)</label>
   </div>`;
 
+  // Vol Target 토글
+  const vtOn = !!d.vol_target_enabled;
+  html += `<div style="margin-top:8px;display:flex;align-items:center;gap:12px">
+    <span style="font-size:12px;color:var(--text2)">사이징 모드:</span>
+    <label style="font-size:13px"><input type="checkbox" id="cfg-vol_target_enabled" ${vtOn?'checked':''}> Vol Target (ATR 기반 risk parity) 사용</label>
+    <span style="font-size:11px;color:var(--text2)">꺼짐=max_position_pct 균등</span>
+  </div>`;
+
   html += `<div class="setting-bar">
     <button class="save" onclick="saveSettings()">설정 저장</button>
     <span class="save-msg" id="saveMsg"></span>
@@ -1017,7 +1189,11 @@ async function saveSettings() {
     stop_loss_pct: parseFloat(document.getElementById('cfg-stop_loss_pct').value) || -3,
     take_profit_pct: parseFloat(document.getElementById('cfg-take_profit_pct').value) || 7,
     daily_loss_limit_pct: parseFloat(document.getElementById('cfg-daily_loss_limit_pct').value) || -2,
+    weekly_mdd_limit_pct: parseFloat(document.getElementById('cfg-weekly_mdd_limit_pct').value) || -5,
     cooldown_after_consecutive_losses: parseInt(document.getElementById('cfg-cooldown_after_consecutive_losses').value) || 3,
+    vol_target_enabled: document.getElementById('cfg-vol_target_enabled').checked,
+    vol_target_per_trade_pct: parseFloat(document.getElementById('cfg-vol_target_per_trade_pct').value) || 0.5,
+    stop_atr_multiple: parseFloat(document.getElementById('cfg-stop_atr_multiple').value) || 2.0,
     entry_grades: [],
   };
   if (document.getElementById('cfg-grade-A').checked) config.entry_grades.push('A');
@@ -1119,8 +1295,8 @@ async function loadDaemon() {
   const r = await fetch(API+'/api/daemon/status'); const d = await r.json();
   const panel = document.getElementById('daemonPanel');
   const st = d.status || 'stopped';
-  const colors = {running:'var(--green)',paused_session:'var(--red)',paused_maintenance:'var(--yellow)',paused_loss_limit:'var(--red)',paused_cooldown:'var(--yellow)',stopped:'var(--text2)',error:'var(--red)'};
-  const labels = {running:'실행 중',paused_session:'세션 만료 (재로그인 필요)',paused_maintenance:'점검 대기',paused_loss_limit:'일일 손실 한도 도달',paused_cooldown:'냉각기',stopped:'정지',error:'에러'};
+  const colors = {running:'var(--green)',paused_session:'var(--red)',paused_maintenance:'var(--yellow)',paused_loss_limit:'var(--red)',paused_mdd:'var(--red)',paused_cooldown:'var(--yellow)',stopped:'var(--text2)',error:'var(--red)'};
+  const labels = {running:'실행 중',paused_session:'세션 만료 (재로그인 필요)',paused_maintenance:'점검 대기',paused_loss_limit:'일일 손실 한도 도달',paused_mdd:'주간 MDD 서킷 (회복 대기)',paused_cooldown:'냉각기',stopped:'정지',error:'에러'};
   const c = colors[st]||'var(--text2)'; const label = labels[st]||st;
   let html = `<div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
     <div style="text-align:center"><div style="width:12px;height:12px;border-radius:50%;background:${c};display:inline-block;${st==='running'?'box-shadow:0 0 8px '+c+';animation:pulse 1.5s infinite':''}"></div> <span style="font-size:14px;font-weight:600;color:${c};margin-left:6px">${label}</span></div>
@@ -1194,7 +1370,7 @@ async function loadHistTrades(status) {
     const r = await fetch(`${API}/api/db/trades?date=${d}&status=${status||'all'}&limit=50`);
     const trades = await r.json();
     if (!trades.length) { el.innerHTML = '<div class="loading">거래 기록 없음</div>'; return; }
-    let html = `<table><thead><tr><th>종목</th><th>T</th><th>방향</th><th>진입일</th><th>수량</th><th>진입가</th><th>등급</th><th>청산일</th><th>청산가</th><th>손익</th><th>사유</th><th>교훈</th></tr></thead><tbody>`;
+    let html = `<table><thead><tr><th>종목</th><th>T</th><th>방향</th><th>진입일</th><th>수량</th><th>의도가</th><th>진입가</th><th>슬리피지</th><th>등급</th><th>청산일</th><th>청산 의도가</th><th>청산가</th><th>청산 슬리피지</th><th>손익</th><th>사유</th><th>교훈</th></tr></thead><tbody>`;
     for (const t of trades) {
       const pnl = t.pnl_pct != null ? t.pnl_pct : '';
       const pnlCls = pnl >= 0 ? 'positive' : 'negative';
@@ -1209,10 +1385,14 @@ async function loadHistTrades(status) {
         <td>${t.side}</td>
         <td class="mono" style="font-size:11px">${entryDt}</td>
         <td class="mono">${t.quantity}</td>
+        <td class="mono" style="font-size:11px">${t.intended_price != null ? fmt(t.intended_price) : '-'}</td>
         <td class="mono">${fmt(t.entry_price)}</td>
+        <td>${_fmtSlip(t.entry_slippage_pct)}</td>
         <td><span class="badge badge-${t.entry_grade==='A'?'green':t.entry_grade==='B'?'blue':'yellow'}">${t.entry_grade||'-'}</span></td>
         <td class="mono" style="font-size:11px">${exitDt}</td>
+        <td class="mono" style="font-size:11px">${t.exit_intended_price != null ? fmt(t.exit_intended_price) : '-'}</td>
         <td class="mono">${t.exit_price != null ? fmt(t.exit_price) : '-'}</td>
+        <td>${_fmtSlip(t.exit_slippage_pct)}</td>
         <td class="mono ${pnlCls}">${pnl !== '' ? (pnl>=0?'+':'') + pnl + '%' : '-'}</td>
         <td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.exit_reason||''}">${t.exit_reason||'-'}</td>
         <td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.lesson||''}">${t.lesson||'-'}</td>

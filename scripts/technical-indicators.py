@@ -40,14 +40,37 @@ def fetch_json(url: str) -> dict:
 
 
 def fetch_candles(code: str, market: str = "us", count: int = 30) -> list:
-    """토스 public API에서 일봉 캔들 데이터 조회"""
+    """일봉 캔들 데이터 조회. KR은 토스 public API, US는 yfinance fallback."""
     mkt = "kr" if market == "kr" else "us"
-    url = CHART_URL.format(market=mkt, code=code, count=count)
-    data = fetch_json(url)
-    candles = data.get("result", {}).get("candles", [])
-    # 오래된 순으로 정렬
-    candles.reverse()
-    return candles
+    if mkt == "kr":
+        url = CHART_URL.format(market=mkt, code=code, count=count)
+        data = fetch_json(url)
+        candles = data.get("result", {}).get("candles", [])
+        # 오래된 순으로 정렬
+        candles.reverse()
+        return candles
+
+    # US: yfinance fallback (토스 US productCode 체계 복잡하여 우회)
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(code)
+        # count+5일 여유 (주말/공휴일 제외하면 영업일 보존됨)
+        hist = ticker.history(period=f"{count + 10}d", interval="1d", auto_adjust=False)
+        if hist is None or hist.empty:
+            return []
+        rows = hist.tail(count)
+        candles = []
+        for ts, row in rows.iterrows():
+            candles.append({
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": int(row["Volume"]) if not (row["Volume"] != row["Volume"]) else 0,
+            })
+        return candles
+    except Exception:
+        return []
 
 
 def compute_rsi(closes: list, period: int = 14) -> float:
@@ -107,6 +130,41 @@ def compute_ema(closes: list, period: int = 9) -> float:
     return round(ema, 2)
 
 
+def compute_atr(highs: list, lows: list, closes: list, period: int = 14) -> float:
+    """Average True Range (Wilder 평활).
+
+    TR = max(high-low, |high - prev_close|, |low - prev_close|)
+    ATR = Wilder SMA(TR, period)
+    절대값 (가격 단위). 변동성 기반 포지션 사이징에 사용.
+    """
+    n = min(len(highs), len(lows), len(closes))
+    if n < period + 1:
+        return 0.0
+
+    trs = []
+    for i in range(1, n):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        trs.append(tr)
+
+    # Wilder smoothing: 초기 SMA → 이후 EMA-like (1/period)
+    atr = sum(trs[:period]) / period
+    for tr in trs[period:]:
+        atr = (atr * (period - 1) + tr) / period
+    return round(atr, 4)
+
+
+def compute_atr_pct(highs: list, lows: list, closes: list, period: int = 14) -> float:
+    """ATR의 % 표기 (current_price 대비). 종목 간 비교용."""
+    atr = compute_atr(highs, lows, closes, period)
+    if not closes or closes[-1] <= 0:
+        return 0.0
+    return round(atr / closes[-1] * 100, 3)
+
+
 def compute_volume_ratio(volumes: list, period: int = 20) -> float:
     """거래량 비율: 당일 / 20일 평균"""
     if len(volumes) < 2:
@@ -138,6 +196,8 @@ def analyze_symbol(code: str, market: str = "us") -> dict:
     prev_ema9 = compute_ema(closes[:-1], 9) if len(closes) > 9 else None
     prev_ema21 = compute_ema(closes[:-1], 21) if len(closes) > 21 else None
     vol_ratio = compute_volume_ratio(volumes)
+    atr = compute_atr(highs, lows, closes, period=14)
+    atr_pct = compute_atr_pct(highs, lows, closes, period=14)
 
     # EMA 크로스 판단 — 진짜 크로스오버인지 확인
     is_golden_crossover = (
@@ -216,6 +276,7 @@ def analyze_symbol(code: str, market: str = "us") -> dict:
         "bollinger": {**bb, "signal": bb_signal},
         "ema": {"ema9": ema9, "ema21": ema21, "signal": ema_signal, "is_golden_crossover": is_golden_crossover},
         "volume_ratio": {"value": vol_ratio, "signal": vol_signal},
+        "atr": {"value": atr, "pct": atr_pct, "period": 14},
         "tech_score": tech_score,
         "tech_grade": "A" if tech_score >= 70 else "B" if tech_score >= 55 else "C" if tech_score >= 40 else "D",
         "candle_count": len(candles),
